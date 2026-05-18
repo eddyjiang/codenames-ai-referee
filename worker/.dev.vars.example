@@ -1,0 +1,11 @@
+# Copy this to worker/.dev.vars (gitignored) and fill in your keys.
+# wrangler dev reads this file automatically — no export needed.
+
+# Use ONE of: ANTHROPIC_API_KEY or OPENROUTER_API_KEY for vision.
+# OPENROUTER_API_KEY takes priority when both are set.
+OPENROUTER_API_KEY=sk-or-...
+# ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional — only needed for Whisper STT and TTS.
+# Without it, the worker skips audio transcription (use Web Speech API in browser instead).
+# OPENAI_API_KEY=sk-...

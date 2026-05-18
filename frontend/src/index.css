@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  body {
+    background-color: #0c0608;
+    /* Three-stop warm glow from top — gold → terracotta → crimson → black */
+    background-image:
+      radial-gradient(ellipse at 50% -5%,
+        rgba(245,165,33,0.11) 0%,
+        rgba(216,91,63,0.07) 30%,
+        rgba(144,31,75,0.04) 55%,
+        transparent 70%
+      );
+    background-attachment: fixed;
+    color: #f0e4c8;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
+  }
+
+  main {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 1.5rem);
+  }
+}
+
+@layer components {
+  /* ─── Word card — mirrors physical Codenames card ─── */
+  .cn-card {
+    @apply flex items-center justify-center rounded text-center select-none;
+    background: #f0e4c8;
+    color: #1a0a08;
+    aspect-ratio: 5 / 3;
+    font-family: "Oswald", Impact, sans-serif;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    border: 1px solid rgba(26,10,8,0.14);
+    box-shadow:
+      0 1px 3px rgba(0,0,0,0.5),
+      inset 0 1px 0 rgba(255,255,255,0.55);
+  }
+
+  .cn-card-revealed-red {
+    background: #901f4b;
+    color: #fff;
+    border-color: #5a0e2e;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  }
+
+  .cn-card-revealed-blue {
+    background: #1A56A8;
+    color: #fff;
+    border-color: #0D2F6B;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  }
+
+  .cn-card-revealed-bystander {
+    background: #b89a6a;
+    color: #fff;
+    border-color: #8b6e42;
+  }
+
+  .cn-card-revealed-assassin {
+    background: #181010;
+    color: #666;
+    border-color: #000;
+  }
+
+  /* ─── Primary button — gold → terracotta gradient ─── */
+  .btn-primary {
+    @apply font-heading font-semibold tracking-wider uppercase text-sm rounded-full px-6 py-2.5 transition-all active:scale-95;
+    background: linear-gradient(135deg, #f5a521 0%, #d85b3f 100%);
+    color: #0c0608;
+    box-shadow: 0 2px 16px rgba(245,165,33,0.30), 0 1px 0 rgba(255,255,255,0.1) inset;
+  }
+
+  .btn-primary:hover {
+    box-shadow: 0 4px 24px rgba(245,165,33,0.45), 0 1px 0 rgba(255,255,255,0.1) inset;
+    filter: brightness(1.06);
+  }
+
+  /* ─── Ghost button ─── */
+  .btn-ghost {
+    @apply font-heading font-medium tracking-wider uppercase text-sm rounded-full px-5 py-2 transition-all active:scale-95;
+    border: 1px solid rgba(144,31,75,0.35);
+    color: rgba(255,255,255,0.75);
+  }
+
+  .btn-ghost:hover {
+    border-color: rgba(216,91,63,0.5);
+    color: rgba(255,255,255,0.95);
+  }
+
+  /* ─── Glass surface ─── */
+  .surface {
+    background: rgba(17, 7, 9, 0.85);
+    border: 1px solid rgba(144,31,75,0.18);
+    backdrop-filter: blur(12px);
+  }
+
+  /* ─── Thin separator ─── */
+  .brand-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #901f4b, #d85b3f, #f5a521, #d85b3f, #901f4b, transparent);
+    opacity: 0.4;
+  }
+}

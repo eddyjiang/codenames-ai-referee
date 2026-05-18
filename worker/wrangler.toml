@@ -1,0 +1,27 @@
+name = "codenames-rules-guy"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+# For local dev, put secrets in worker/.dev.vars (gitignored).
+# For production, use: wrangler secret put ANTHROPIC_API_KEY  (or OPENROUTER_API_KEY)
+#                      wrangler secret put OPENAI_API_KEY
+
+# Local dev uses .wrangler/state/ for KV and D1 — no real Cloudflare account needed.
+# Placeholder IDs below are fine for `wrangler dev`; replace with real ones before deploying.
+[[kv_namespaces]]
+binding = "BOARD_KV"
+id = "00000000000000000000000000000001"
+preview_id = "00000000000000000000000000000002"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "codenames-db"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "../db/migrations"
+
+[dev]
+port = 8787
+local_protocol = "http"
