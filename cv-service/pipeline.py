@@ -11,26 +11,15 @@ Two modes:
 import base64
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
-import easyocr
+import pytesseract
 
 logger = logging.getLogger(__name__)
 
 MAX_DIM = 1280
-
-_reader: Optional[easyocr.Reader] = None
-
-
-def get_reader() -> easyocr.Reader:
-    global _reader
-    if _reader is None:
-        logger.info("Initializing EasyOCR — first run downloads ~100 MB of models...")
-        _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        logger.info("EasyOCR ready")
-    return _reader
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +189,11 @@ def analyze_board(image_base64: str) -> dict:
 
     cell_h, cell_w = warp_h / 5, warp_w / 5
 
-    reader = get_reader()
     gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    ocr_results = reader.readtext(thresh, detail=1, paragraph=False)
+    ocr_data: dict[str, Any] = pytesseract.image_to_data(
+        thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
+    )
 
     cards = []
     for row in range(5):
@@ -220,14 +210,19 @@ def analyze_board(image_base64: str) -> dict:
 
             best_word: Optional[str] = None
             best_ocr_conf = 0.0
-            for (pts, text, conf) in ocr_results:
-                cx = float(np.mean([p[0] for p in pts]))
-                cy = float(np.mean([p[1] for p in pts]))
-                if x1 <= cx < x2 and y1 <= cy < y2 and conf > best_ocr_conf:
-                    word = text.upper().strip()
+            for i, text in enumerate(ocr_data["text"]):
+                text = text.strip()
+                conf = int(ocr_data["conf"][i])
+                if conf < 0 or not text:
+                    continue
+                cx = ocr_data["left"][i] + ocr_data["width"][i] / 2
+                cy = ocr_data["top"][i] + ocr_data["height"][i] / 2
+                norm_conf = conf / 100.0
+                if x1 <= cx < x2 and y1 <= cy < y2 and norm_conf > best_ocr_conf:
+                    word = text.upper()
                     if len(word) >= 2 and not word.isdigit():
                         best_word = word
-                        best_ocr_conf = conf
+                        best_ocr_conf = norm_conf
 
             bbox = _cell_bbox_in_original(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
             card_conf = (color_conf + best_ocr_conf) / 2 if best_word else color_conf * 0.6

@@ -1,26 +1,17 @@
 import logging
 import os
-from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from pipeline import analyze_board, track_board, get_reader
+from pipeline import analyze_board, track_board
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 API_SECRET = os.getenv("API_SECRET", "")
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Pre-warm EasyOCR at startup so the first request isn't slow
-    get_reader()
-    yield
-
-
-app = FastAPI(title="Codenames CV Service", lifespan=lifespan)
+app = FastAPI(title="Codenames CV Service")
 
 
 def verify_secret(x_api_secret: str = Header(default="")):
