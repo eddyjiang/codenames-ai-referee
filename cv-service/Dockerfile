@@ -14,10 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download EasyOCR English models during the build so the container
-# starts instantly (no cold-start model download).
-RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False, verbose=False)"
-
 COPY . .
 
 EXPOSE 8000
