@@ -4,7 +4,7 @@ region: nyc
 services:
   - name: cv
     dockerfile_path: cv-service/Dockerfile
-    source_dir: /
+    source_dir: cv-service
     github:
       repo: eddyjiang/codenames-ai-referee
       branch: main
