@@ -2,12 +2,20 @@ export type Team = "red" | "blue";
 export type CardTeam = "red" | "blue" | "bystander" | "assassin";
 export type InterventionLevel = "none" | "log" | "nudge" | "stop";
 
+export interface BBox {
+  x: number; // left edge, 0–1 fraction of image width
+  y: number; // top edge,  0–1 fraction of image height
+  w: number; // width,     0–1 fraction of image width
+  h: number; // height,    0–1 fraction of image height
+}
+
 export interface CardState {
   position: number; // 0–24, row-major
   word: string | null;
   revealed: boolean;
   team: CardTeam | null;
   confidence: number;
+  bbox?: BBox | null;
 }
 
 export interface BoardScore {
@@ -66,10 +74,13 @@ export interface HouseRules {
 export interface Env {
   BOARD_KV: KVNamespace;
   DB: D1Database;
-  // Vision: set OPENROUTER_API_KEY (takes priority) or ANTHROPIC_API_KEY
+  // Tier 1: dedicated CV service on DigitalOcean (fast, cheap, precise bboxes)
+  CV_SERVICE_URL: string;   // e.g. https://cv-service-xxxxx.ondigitalocean.app
+  CV_API_SECRET: string;    // shared secret with the CV service
+  // Tier 2 fallback: LLM vision via OpenRouter or Anthropic SDK
   OPENROUTER_API_KEY: string;
   ANTHROPIC_API_KEY: string;
-  // Voice: optional — voice I/O degrades gracefully without it
+  // Voice: optional — degrades gracefully without it
   OPENAI_API_KEY: string;
   ENVIRONMENT: string;
 }

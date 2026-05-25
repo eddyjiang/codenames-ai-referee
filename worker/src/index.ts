@@ -87,9 +87,11 @@ app.post("/api/session/:id/frame", async (c) => {
 
   const mediaType = body.media_type ?? "image/jpeg";
 
+  const existingBoard = await getBoardState(sessionId, c.env.BOARD_KV);
+
   let boardState;
   try {
-    boardState = await analyzeFrame(body.image, mediaType, c.env);
+    boardState = await analyzeFrame(body.image, mediaType, c.env, existingBoard ?? undefined);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

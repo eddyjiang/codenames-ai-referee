@@ -1,11 +1,17 @@
 # Copy this to worker/.dev.vars (gitignored) and fill in your keys.
 # wrangler dev reads this file automatically — no export needed.
 
-# Use ONE of: ANTHROPIC_API_KEY or OPENROUTER_API_KEY for vision.
-# OPENROUTER_API_KEY takes priority when both are set.
+# ── Tier 1: Dedicated CV service (DigitalOcean) ──────────────────────────────
+# Set once your DO App Platform service is deployed.
+# Leave blank to skip CV service and go straight to LLM fallback.
+# CV_SERVICE_URL=https://cv-service-xxxxx.ondigitalocean.app
+# CV_API_SECRET=change-me-to-a-random-string   # must match API_SECRET in cv-service
+
+# ── Tier 2: LLM vision fallback (use ONE of these) ───────────────────────────
+# OpenRouter is preferred — supports claude-sonnet-4-5 via OpenAI-compatible API.
 OPENROUTER_API_KEY=sk-or-...
 # ANTHROPIC_API_KEY=sk-ant-...
 
-# Optional — only needed for Whisper STT and TTS.
-# Without it, the worker skips audio transcription (use Web Speech API in browser instead).
+# ── Voice (optional) ─────────────────────────────────────────────────────────
+# Only needed for Whisper STT and TTS. Without it, voice uses the Web Speech API.
 # OPENAI_API_KEY=sk-...

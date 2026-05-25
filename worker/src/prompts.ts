@@ -8,7 +8,14 @@ A standard Codenames board has 25 word cards in a 5×5 grid. Each card shows a s
 Return ONLY valid JSON — no prose, no markdown fences — matching this exact schema:
 {
   "board": [
-    { "position": 0, "word": "WORD", "revealed": false, "team": null, "confidence": 0.97 }
+    {
+      "position": 0,
+      "word": "WORD",
+      "revealed": false,
+      "team": null,
+      "confidence": 0.97,
+      "bbox": { "x": 0.02, "y": 0.05, "w": 0.18, "h": 0.12 }
+    }
   ],
   "score": { "red_remaining": null, "blue_remaining": null, "confidence": 0.0 },
   "metadata": { "overall_confidence": 0.95, "issues": [], "partial_visibility": false, "notes": "" }
@@ -20,6 +27,7 @@ Rules:
 - revealed: true if covered by colored tile, false if face-up word card.
 - team: "red" | "blue" | "bystander" | "assassin" | null (null if unrevealed or uncertain).
 - confidence: per-card float 0.0–1.0.
+- bbox: bounding box of the card in the image. x/y are the top-left corner; w/h are width and height. All values are normalized 0.0–1.0 fractions of the image dimensions. Estimate as accurately as possible from the visible card edges.
 - Never guess a word you cannot see at least 60% of — use null.
 - Do not confuse card border color with team color.
 - Shadows do not make a card revealed.`;

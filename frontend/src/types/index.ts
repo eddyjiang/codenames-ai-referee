@@ -2,12 +2,20 @@ export type Team = "red" | "blue";
 export type CardTeam = "red" | "blue" | "bystander" | "assassin";
 export type InterventionLevel = "none" | "log" | "nudge" | "stop";
 
+export interface BBox {
+  x: number; // left edge, 0–1 fraction of image width
+  y: number; // top edge,  0–1 fraction of image height
+  w: number; // width,     0–1 fraction of image width
+  h: number; // height,    0–1 fraction of image height
+}
+
 export interface CardState {
   position: number;
   word: string | null;
   revealed: boolean;
   team: CardTeam | null;
   confidence: number;
+  bbox?: BBox | null;
 }
 
 export interface BoardState {

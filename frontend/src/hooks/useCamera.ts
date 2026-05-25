@@ -20,13 +20,35 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
 
+    // If video and screen aspect ratios don't match, the stream needs rotation
+    const screenIsPortrait = window.innerHeight > window.innerWidth;
+    const videoIsPortrait = vh > vw;
+    const needsRotation = screenIsPortrait !== videoIsPortrait;
+
+    if (needsRotation) {
+      const angle = (screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0) as number;
+      // angles 0/90 → rotate CW; 180/270 → rotate CCW
+      const cw = angle === 0 || angle === 90;
+      canvas.width = vh;
+      canvas.height = vw;
+      if (cw) {
+        ctx.translate(vh, 0);
+        ctx.rotate(Math.PI / 2);
+      } else {
+        ctx.translate(0, vw);
+        ctx.rotate(-Math.PI / 2);
+      }
+    } else {
+      canvas.width = vw;
+      canvas.height = vh;
+    }
+
     ctx.drawImage(video, 0, 0);
-    // Strip the data:image/jpeg;base64, prefix
     return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
   }, []);
 

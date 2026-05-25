@@ -2,10 +2,9 @@ import { useState, useCallback, useEffect } from "react";
 import { CameraCapture } from "./components/CameraCapture";
 import { BoardOverlay } from "./components/BoardOverlay";
 import { VoiceControls } from "./components/VoiceControls";
+import { GameSetup } from "./components/GameSetup";
 import { api } from "./lib/api";
 import type { BoardState, Team, RulesResult } from "./types";
-
-type View = "camera" | "board" | "game";
 
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -15,7 +14,7 @@ export default function App() {
   const [currentTeam, setCurrentTeam] = useState<Team>("red");
   const [currentClue, setCurrentClue] = useState<{ word: string; number: number } | null>(null);
   const [guessesThisTurn, setGuessesThisTurn] = useState(0);
-  const [view, setView] = useState<View>("camera");
+  const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,15 +36,15 @@ export default function App() {
     [sessionId]
   );
 
-  const handleStartGame = useCallback(async () => {
+  const handleStartGame = useCallback(async (firstTeam: Team, timer: number | null) => {
     if (!sessionId) return;
     try {
       const { game_id } = await api.startGame(sessionId);
       setGameId(game_id);
-      setCurrentTeam("red");
+      setCurrentTeam(firstTeam);
       setCurrentClue(null);
       setGuessesThisTurn(0);
-      setView("game");
+      setTimerSeconds(timer);
     } catch (e) {
       alert((e as Error).message);
     }
@@ -115,19 +114,14 @@ export default function App() {
     );
   }
 
-  const navItems: { id: View; label: string }[] = [
-    { id: "camera", label: "Camera" },
-    { id: "board",  label: "Board" },
-    { id: "game",   label: "Game" },
-  ];
-
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="px-5 pt-8 pb-4 flex items-center justify-between">
-        <div>
-          <img src="/logo.png" alt="Codenames" className="h-8 mb-0.5" />
-          <p className="font-heading text-[10px] tracking-[0.3em] uppercase text-brand-gold/70">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="Codenames" className="h-10" />
+          <div className="w-0.5 h-8 bg-brand-gold/40" />
+          <p className="font-heading text-2xl font-bold tracking-tight uppercase text-brand-gold leading-none">
             AI Referee
           </p>
         </div>
@@ -142,77 +136,36 @@ export default function App() {
         )}
       </header>
 
-      {/* Header divider */}
-      <div className="brand-rule mx-5 mb-4" />
+      {/* Main layout: camera+board left (75%), game panel right (25%) */}
+      <main className="flex-1 px-5 pb-6">
+        <div className="flex flex-col md:flex-row md:items-start gap-4">
 
-      {/* Navigation */}
-      <nav className="px-5 pb-4">
-        <div className="flex gap-1 p-1 rounded-xl surface">
-          {navItems.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => setView(id)}
-              className={[
-                "flex-1 py-2 rounded-lg font-heading text-xs tracking-widest uppercase transition-all",
-                view === id
-                  ? "text-surface-900 font-bold shadow-md"
-                  : "text-white/60 hover:text-white/90",
-              ].join(" ")}
-              style={view === id ? { background: "linear-gradient(135deg, #f5a521 0%, #d85b3f 100%)" } : {}}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </nav>
-
-      {/* Content */}
-      <main className="flex-1 px-5 space-y-4">
-        {view === "camera" && (
-          <div className="space-y-4">
-            <CameraCapture
-              sessionId={sessionId}
-              onBoardUpdate={handleBoardUpdate}
-              onError={console.error}
-              onFrameSend={handleFrameSend}
-            />
-            {board && (
-              <div className="flex items-center justify-between text-xs px-1">
-                <span className="text-white/70">
-                  {board.board.filter((c) => c.word).length} / 25 cards detected
-                </span>
-                <button
-                  onClick={() => setView("board")}
-                  className="font-heading tracking-widest uppercase text-brand-gold text-[10px] hover:text-brand-amber transition-colors"
-                >
-                  View board
-                </button>
-              </div>
-            )}
+          {/* Camera + board overlay — full width on mobile, 75% on desktop */}
+          <div className="md:flex-[3]">
+            <div className="relative">
+              <CameraCapture
+                sessionId={sessionId}
+                onBoardUpdate={handleBoardUpdate}
+                onError={console.error}
+                onFrameSend={handleFrameSend}
+                autoStart
+              />
+              {board && (
+                <BoardOverlay board={board} lowConfidence={lowConfidence} overlay />
+              )}
+            </div>
           </div>
-        )}
 
-        {view === "board" && (
-          <div className="space-y-4">
-            <BoardOverlay board={board} lowConfidence={lowConfidence} />
-            {board && !gameId && (
-              <button onClick={handleStartGame} className="btn-primary w-full">
-                Start Game
-              </button>
-            )}
-          </div>
-        )}
-
-        {view === "game" && (
-          <div className="space-y-4">
+          {/* Game panel — full width on mobile (scrolls below), 25% sidebar on desktop */}
+          <div className="md:flex-1 md:sticky md:top-4 space-y-4">
             {!gameId ? (
-              <div className="text-center py-12 space-y-4">
-                <p className="font-heading text-lg tracking-widest uppercase text-white/70">No active game</p>
-                <p className="text-sm text-white/55">Scan the board first, then start a game.</p>
-                <button onClick={() => setView("camera")} className="btn-ghost">
-                  Open Camera
-                </button>
-              </div>
+              board ? (
+                <GameSetup onStart={handleStartGame} />
+              ) : (
+                <p className="text-center font-heading text-sm tracking-widest uppercase text-white/40 py-4">
+                  Scan the board to begin
+                </p>
+              )
             ) : (
               <VoiceControls
                 sessionId={sessionId}
@@ -224,10 +177,12 @@ export default function App() {
                 currentTeam={currentTeam}
                 currentClue={currentClue}
                 guessesThisTurn={guessesThisTurn}
+                timerSeconds={timerSeconds}
               />
             )}
           </div>
-        )}
+
+        </div>
       </main>
     </div>
   );

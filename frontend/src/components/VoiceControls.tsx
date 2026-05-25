@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   useVoiceRecorder,
   useSpeechInput,
@@ -28,6 +28,7 @@ interface Props {
   currentTeam: "red" | "blue";
   currentClue: { word: string; number: number } | null;
   guessesThisTurn: number;
+  timerSeconds: number | null;
 }
 
 type ClueState =
@@ -61,6 +62,12 @@ const LEVEL_CONFIG = {
   stop:  { label: "Illegal", bg: "rgba(144,31,75,0.12)",   border: "rgba(144,31,75,0.40)",   text: "#d85b3f" },
 };
 
+function formatTime(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
 export function VoiceControls({
   sessionId: _sessionId,
   hasBoard,
@@ -71,12 +78,44 @@ export function VoiceControls({
   currentTeam,
   currentClue,
   guessesThisTurn,
+  timerSeconds,
 }: Props) {
   const [mode, setMode] = useState<"live" | "upload">(
     isSpeechRecognitionSupported() ? "live" : "upload"
   );
   const [clueState, setClueState] = useState<ClueState>({ status: "idle" });
   const [guessMsg, setGuessMsg] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [timesUp, setTimesUp] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Start/reset countdown whenever a new clue is set
+  useEffect(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+
+    if (!timerSeconds || !currentClue) {
+      setTimeLeft(null);
+      setTimesUp(false);
+      return;
+    }
+
+    setTimeLeft(timerSeconds);
+    setTimesUp(false);
+
+    intervalRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(intervalRef.current!);
+          setTimesUp(true);
+          speakText("Time's up!");
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [currentClue, timerSeconds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { recording, error: recError, startRecording, stopRecording } = useVoiceRecorder();
   const { listening, error: speechError, listen, cancel } = useSpeechInput();
@@ -162,12 +201,34 @@ export function VoiceControls({
             </p>
           )}
         </div>
-        <button
-          onClick={onTurnEnd}
-          className="font-heading text-[10px] tracking-[0.2em] uppercase text-white/65 border border-white/25 rounded-full px-3 py-1.5 hover:text-white/90 hover:border-white/45 transition-colors active:scale-95"
-        >
-          End Turn
-        </button>
+        <div className="flex flex-col items-end gap-1.5">
+          {/* Timer */}
+          {timerSeconds && currentClue && (
+            timesUp ? (
+              <span
+                className="font-heading text-xs font-bold tracking-widest uppercase animate-pulse"
+                style={{ color: "#f5a521" }}
+              >
+                Time's up
+              </span>
+            ) : timeLeft !== null && (
+              <span
+                className="font-heading text-lg font-bold tabular-nums leading-none"
+                style={{
+                  color: timeLeft <= 10 ? "#d85b3f" : timeLeft <= 30 ? "#f5a521" : "rgba(255,255,255,0.75)",
+                }}
+              >
+                {formatTime(timeLeft)}
+              </span>
+            )
+          )}
+          <button
+            onClick={onTurnEnd}
+            className="font-heading text-[10px] tracking-[0.2em] uppercase text-white/65 border border-white/25 rounded-full px-3 py-1.5 hover:text-white/90 hover:border-white/45 transition-colors active:scale-95"
+          >
+            End Turn
+          </button>
+        </div>
       </div>
 
       {/* Mode toggle */}
@@ -176,8 +237,8 @@ export function VoiceControls({
           onClick={() => setMode("live")}
           disabled={!isSpeechRecognitionSupported()}
           className={[
-            "flex-1 py-1.5 rounded-lg font-heading text-[10px] tracking-[0.2em] uppercase transition-all",
-            mode === "live" ? "text-surface-900 font-bold shadow-md" : "text-white/55",
+            "flex-1 py-1.5 rounded-lg font-heading text-[10px] font-bold tracking-[0.2em] uppercase transition-all",
+            mode === "live" ? "text-surface-900 shadow-md" : "text-white/55",
             !isSpeechRecognitionSupported() && "opacity-30 cursor-not-allowed",
           ].join(" ")}
           style={mode === "live" ? { background: "linear-gradient(135deg, #f5a521 0%, #d85b3f 100%)" } : {}}
@@ -187,8 +248,8 @@ export function VoiceControls({
         <button
           onClick={() => setMode("upload")}
           className={[
-            "flex-1 py-1.5 rounded-lg font-heading text-[10px] tracking-[0.2em] uppercase transition-all",
-            mode === "upload" ? "text-surface-900 font-bold shadow-md" : "text-white/55",
+            "flex-1 py-1.5 rounded-lg font-heading text-[10px] font-bold tracking-[0.2em] uppercase transition-all",
+            mode === "upload" ? "text-surface-900 shadow-md" : "text-white/55",
           ].join(" ")}
           style={mode === "upload" ? { background: "linear-gradient(135deg, #E8A830, #D4711E)" } : {}}
         >

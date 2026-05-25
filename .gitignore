@@ -8,12 +8,22 @@ dist/
 # Wrangler local secrets (contains API keys — never commit)
 worker/.dev.vars
 
+# Python (cv-service)
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+cv-service/.env
+
 # Build outputs
 frontend/dist/
 worker/dist/
 
 # D1 local database
 .wrangler/state/
+
+# Test images
+test-boards/
 
 # OS
 .DS_Store

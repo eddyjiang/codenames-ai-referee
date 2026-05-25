@@ -27,12 +27,12 @@ export default {
         },
         // Black-based surfaces with the faintest warm undertone
         surface: {
-          950: "#0c0608",
-          900: "#110709",
-          800: "#1a0c0e",
-          700: "#241014",
-          600: "#321520",
-          500: "#4a1e2e",
+          950: "#1e0810",
+          900: "#280b16",
+          800: "#33101e",
+          700: "#3d1428",
+          600: "#4f1a33",
+          500: "#662040",
         },
       },
       backgroundImage: {
