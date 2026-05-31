@@ -94,4 +94,19 @@ export const api = {
   ): Promise<unknown> {
     return post(`/session/${sessionId}/house-rules`, rules);
   },
+
+  async resetBoard(sessionId: string): Promise<void> {
+    const res = await fetch(`${BASE}/session/${sessionId}/board`, { method: "DELETE" });
+    if (!res.ok) throw new Error(res.statusText);
+  },
+
+  async updateCard(sessionId: string, position: number, word: string): Promise<BoardState> {
+    const res = await fetch(`${BASE}/session/${sessionId}/board/card`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position, word }),
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return ((await res.json()) as { board: BoardState }).board;
+  },
 };

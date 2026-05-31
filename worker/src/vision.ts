@@ -5,9 +5,9 @@ import { VISION_PROMPT } from "./prompts";
 const OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
-// Minimum quality bar to accept a CV service result without LLM fallback
 const CV_MIN_CONFIDENCE = 0.72;
-const CV_MIN_WORDS = 20;
+const CV_MIN_WORDS = 20;       // minimum words to accept a full CV scan
+const LOCK_THRESHOLD = 1;      // lock words after any LLM scan with ≥1 word
 
 // ---------------------------------------------------------------------------
 // Tier 1: dedicated CV service (DigitalOcean)
@@ -123,7 +123,9 @@ function parseVisionResponse(raw: string): BoardState {
 }
 
 // ---------------------------------------------------------------------------
-// Public entry point — tries CV service first, falls back to LLM
+// Public entry point
+// Full scans (first frame): LLM only — better OCR, handles perspective/angle
+// Track scans (subsequent frames): CV service only — color classification, no OCR
 // ---------------------------------------------------------------------------
 
 export async function analyzeFrame(
@@ -135,10 +137,10 @@ export async function analyzeFrame(
   // Use track mode if we already have a locked board with ≥20 words
   const lockedWords = existingBoard?.board.map((c) => c.word ?? null) ?? null;
   const lockedWordCount = lockedWords?.filter(Boolean).length ?? 0;
-  const useTrack = lockedWordCount >= CV_MIN_WORDS;
+  const useTrack = lockedWordCount >= LOCK_THRESHOLD;
 
-  // Tier 1: fast dedicated CV service
-  if (env.CV_SERVICE_URL) {
+  // Tier 1: CV service — track mode only (color classification, no OCR)
+  if (env.CV_SERVICE_URL && useTrack) {
     try {
       const result = await analyzeViaCVService(
         imageBase64,
@@ -147,20 +149,28 @@ export async function analyzeFrame(
         useTrack ? "track" : "full",
         useTrack ? lockedWords! : undefined
       );
-      // Track mode: always accept (color-only is reliable); full mode: quality threshold
-      if (useTrack || (result.metadata.overall_confidence >= CV_MIN_CONFIDENCE && result.board.filter((c) => c.word).length >= CV_MIN_WORDS)) {
+      // Track mode only — full scans always go to LLM for better OCR accuracy
+      if (useTrack) {
         result.captured_at = Date.now();
-        // Carry locked words forward so they're never lost
-        if (useTrack && lockedWords) {
-          result.board.forEach((c, i) => { c.word = lockedWords[i] ?? c.word ?? null; });
+        if (lockedWords && existingBoard) {
+          result.board.forEach((c, i) => {
+            c.word = lockedWords[i] ?? c.word ?? null;
+            const locked = existingBoard.board[i];
+            // Lock bbox for stability; use fresh CV corners when available, fall back to locked
+            if (locked?.bbox) c.bbox = locked.bbox;
+            if (!c.corners && locked?.corners) c.corners = locked.corners;
+          });
         }
         return result;
       }
-      console.log(
-        `CV service below threshold (conf=${result.metadata.overall_confidence}, words=${result.board.filter((c) => c.word).length}) — falling back to LLM`
-      );
     } catch (e) {
-      console.error("CV service unavailable, falling back to LLM:", (e as Error).message);
+      console.error("CV service unavailable:", (e as Error).message);
+      // In track mode, return existing board unchanged rather than calling LLM again —
+      // words and bboxes stay frozen, no more flickering
+      if (useTrack && existingBoard) {
+        existingBoard.captured_at = Date.now();
+        return existingBoard;
+      }
     }
   }
 
@@ -200,4 +210,8 @@ export async function getBoardState(
   const raw = await kv.get(`board:${sessionId}`);
   if (!raw) return null;
   return JSON.parse(raw) as BoardState;
+}
+
+export async function clearBoardState(sessionId: string, kv: KVNamespace): Promise<void> {
+  await kv.delete(`board:${sessionId}`);
 }

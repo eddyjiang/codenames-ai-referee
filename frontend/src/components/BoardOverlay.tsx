@@ -1,9 +1,11 @@
-import type { BoardState, CardState, CardTeam, BBox } from "../types";
+import type { BoardState, CardState, CardTeam, BBox, CardCorners } from "../types";
 
 interface Props {
   board: BoardState | null;
   lowConfidence: boolean;
   overlay?: boolean;
+  onRescan?: () => void;
+  onCardEdit?: (position: number, word: string) => void;
 }
 
 const TEAM_CLASS: Record<CardTeam, string> = {
@@ -13,19 +15,27 @@ const TEAM_CLASS: Record<CardTeam, string> = {
   assassin:  "cn-card cn-card-revealed-assassin",
 };
 
-// Overlay colours per team — bg, border, text
-const TEAM_OVERLAY: Record<CardTeam, { bg: string; border: string; text: string }> = {
-  red:       { bg: "rgba(144,31,75,0.60)",   border: "#d85b3f", text: "#fff" },
-  blue:      { bg: "rgba(26,86,168,0.60)",   border: "#60a5fa", text: "#fff" },
-  bystander: { bg: "rgba(184,154,106,0.55)", border: "#b89a6a", text: "#fff" },
-  assassin:  { bg: "rgba(10,5,5,0.75)",      border: "#555",    text: "#aaa" },
+const TEAM_OVERLAY: Record<CardTeam, { fill: string; stroke: string; text: string }> = {
+  red:       { fill: "rgba(144,31,75,0.60)",   stroke: "#d85b3f", text: "#fff" },
+  blue:      { fill: "rgba(26,86,168,0.60)",   stroke: "#60a5fa", text: "#fff" },
+  bystander: { fill: "rgba(184,154,106,0.55)", stroke: "#b89a6a", text: "#fff" },
+  assassin:  { fill: "rgba(10,5,5,0.75)",      stroke: "#555",    text: "#aaa" },
 };
-const UNREVEALED_OVERLAY = { bg: "rgba(240,228,200,0.08)", border: "rgba(245,165,33,0.45)", text: "rgba(255,255,255,0.85)" };
+const UNREVEALED_OVERLAY = { fill: "rgba(240,228,200,0.08)", stroke: "rgba(245,165,33,0.45)", text: "rgba(255,255,255,0.85)" };
 
 function confColor(conf: number): string {
   if (conf >= 0.85) return "#f5a521";
   if (conf >= 0.65) return "#d85b3f";
   return "#901f4b";
+}
+
+function bboxToCorners(bbox: BBox): CardCorners {
+  return {
+    tl: { x: bbox.x,          y: bbox.y          },
+    tr: { x: bbox.x + bbox.w, y: bbox.y          },
+    br: { x: bbox.x + bbox.w, y: bbox.y + bbox.h },
+    bl: { x: bbox.x,          y: bbox.y + bbox.h },
+  };
 }
 
 function WordCard({ card }: { card: CardState }) {
@@ -51,47 +61,7 @@ function WordCard({ card }: { card: CardState }) {
   );
 }
 
-function DetectedCard({ card }: { card: CardState & { bbox: BBox } }) {
-  const style = card.team ? TEAM_OVERLAY[card.team] : UNREVEALED_OVERLAY;
-  const dim = card.confidence < 0.7;
-
-  return (
-    <div
-      className="absolute flex items-center justify-center rounded overflow-hidden"
-      style={{
-        left:    `${card.bbox.x * 100}%`,
-        top:     `${card.bbox.y * 100}%`,
-        width:   `${card.bbox.w * 100}%`,
-        height:  `${card.bbox.h * 100}%`,
-        background: style.bg,
-        border: `1.5px solid ${style.border}`,
-        opacity: dim ? 0.55 : 1,
-      }}
-    >
-      <span
-        className="font-heading font-bold text-center leading-none select-none"
-        style={{
-          color: style.text,
-          fontSize: "clamp(6px, 1.4vw, 11px)",
-          padding: "1px 2px",
-          wordBreak: "break-word",
-        }}
-      >
-        {card.word ?? "?"}
-      </span>
-      {dim && (
-        <span
-          className="absolute bottom-0.5 right-0.5 font-heading"
-          style={{ fontSize: "clamp(5px, 0.9vw, 8px)", color: style.border, opacity: 0.8 }}
-        >
-          {Math.round(card.confidence * 100)}%
-        </span>
-      )}
-    </div>
-  );
-}
-
-export function BoardOverlay({ board, lowConfidence, overlay }: Props) {
+export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEdit }: Props) {
   if (!board) {
     if (overlay) return null;
     return (
@@ -117,54 +87,121 @@ export function BoardOverlay({ board, lowConfidence, overlay }: Props) {
   const blueRevealed = revealed.filter((c) => c.team === "blue").length;
 
   if (overlay) {
-    const detected = board.board.filter((c): c is CardState & { bbox: BBox } => !!c.bbox);
-    const hasBboxes = detected.length > 0;
+    const overlayCards = board.board.filter((c) => c.corners || c.bbox);
+    const hasOverlay = overlayCards.length > 0;
+
+    if (!hasOverlay) {
+      return (
+        <div className="absolute inset-0 flex flex-col justify-between p-2 rounded-2xl overflow-hidden"
+             style={{ background: "rgba(17,7,9,0.60)" }}>
+          <div className="flex items-center justify-between px-1">
+            <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
+              R {red !== null ? red : redRevealed}
+            </span>
+            <span className="font-heading text-[9px] tracking-widest" style={{ color }}>
+              {lowConfidence ? "Low" : confLabel}
+            </span>
+            <span className="font-heading text-[10px] font-bold tracking-widest text-blue-400">
+              B {blue !== null ? blue : blueRevealed}
+            </span>
+          </div>
+          <div className="grid gap-0.5 opacity-90" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+            {board.board.map((card) => (
+              <WordCard key={card.position} card={card} />
+            ))}
+          </div>
+          <div />
+        </div>
+      );
+    }
 
     return (
       <div className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none">
-        {hasBboxes ? (
-          /* AR mode — each card positioned over its physical location */
-          <>
-            {detected.map((card) => (
-              <DetectedCard key={card.position} card={card} />
-            ))}
-            {/* Score + confidence HUD */}
-            <div className="absolute bottom-2 inset-x-2 flex items-center justify-between px-2 py-1 rounded-lg"
-                 style={{ background: "rgba(17,7,9,0.65)" }}>
-              <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
-                R {red !== null ? red : redRevealed}
-              </span>
-              <span className="font-heading text-[9px] tracking-widest" style={{ color }}>
-                {lowConfidence ? "Low" : confLabel} · {detected.length}/25
-              </span>
-              <span className="font-heading text-[10px] font-bold tracking-widest text-blue-400">
-                B {blue !== null ? blue : blueRevealed}
-              </span>
+        {/* SVG layer: perspective-correct polygon fills and borders */}
+        <svg
+          className="absolute inset-0 w-full h-full"
+          viewBox="0 0 1 1"
+          preserveAspectRatio="none"
+          style={{ pointerEvents: "none" }}
+        >
+          {overlayCards.map((card) => {
+            const c = card.corners ?? bboxToCorners(card.bbox!);
+            const style = card.team ? TEAM_OVERLAY[card.team] : UNREVEALED_OVERLAY;
+            const pts = `${c.tl.x},${c.tl.y} ${c.tr.x},${c.tr.y} ${c.br.x},${c.br.y} ${c.bl.x},${c.bl.y}`;
+            return (
+              <polygon
+                key={card.position}
+                points={pts}
+                fill={style.fill}
+                stroke={style.stroke}
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
+                opacity={card.confidence < 0.7 ? 0.55 : 1}
+              />
+            );
+          })}
+        </svg>
+
+        {/* HTML layer: word labels at polygon centroids */}
+        {overlayCards.map((card) => {
+          const c = card.corners ?? bboxToCorners(card.bbox!);
+          const cx = (c.tl.x + c.tr.x + c.br.x + c.bl.x) / 4;
+          const cy = (c.tl.y + c.tr.y + c.br.y + c.bl.y) / 4;
+          const style = card.team ? TEAM_OVERLAY[card.team] : UNREVEALED_OVERLAY;
+          const dim = card.confidence < 0.7;
+
+          return (
+            <div
+              key={card.position}
+              className="absolute flex flex-col items-center justify-center font-heading font-bold leading-none select-none"
+              style={{
+                left: `${cx * 100}%`,
+                top: `${cy * 100}%`,
+                transform: "translate(-50%, -50%)",
+                color: style.text,
+                fontSize: "clamp(6px, 1.4vw, 11px)",
+                pointerEvents: onCardEdit ? "auto" : "none",
+                cursor: onCardEdit ? "pointer" : "default",
+              }}
+              onClick={onCardEdit ? () => onCardEdit(card.position, card.word ?? "") : undefined}
+            >
+              {card.word ?? "?"}
+              {onCardEdit && (
+                <span style={{ fontSize: "clamp(4px, 0.7vw, 6px)", opacity: 0.5 }}>✎</span>
+              )}
+              {dim && (
+                <span style={{ fontSize: "clamp(4px, 0.8vw, 7px)", color: style.stroke, opacity: 0.8 }}>
+                  {Math.round(card.confidence * 100)}%
+                </span>
+              )}
             </div>
-          </>
-        ) : (
-          /* Fallback grid — vision model didn't return bboxes yet */
-          <div className="absolute inset-0 flex flex-col justify-between p-2"
-               style={{ background: "rgba(17,7,9,0.60)" }}>
-            <div className="flex items-center justify-between px-1">
-              <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
-                R {red !== null ? red : redRevealed}
-              </span>
-              <span className="font-heading text-[9px] tracking-widest" style={{ color }}>
-                {lowConfidence ? "Low" : confLabel}
-              </span>
-              <span className="font-heading text-[10px] font-bold tracking-widest text-blue-400">
-                B {blue !== null ? blue : blueRevealed}
-              </span>
-            </div>
-            <div className="grid gap-0.5 opacity-90" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
-              {board.board.map((card) => (
-                <WordCard key={card.position} card={card} />
-              ))}
-            </div>
-            <div />
-          </div>
-        )}
+          );
+        })}
+
+        {/* Score + confidence HUD */}
+        <div
+          className="absolute bottom-2 inset-x-2 flex items-center justify-between px-2 py-1 rounded-lg"
+          style={{ background: "rgba(17,7,9,0.65)", pointerEvents: "auto" }}
+        >
+          <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
+            R {red !== null ? red : redRevealed}
+          </span>
+          <span className="font-heading text-[9px] tracking-widest" style={{ color }}>
+            {lowConfidence ? "Low" : confLabel} · {overlayCards.length}/25
+          </span>
+          {onRescan && (
+            <button
+              onClick={onRescan}
+              className="font-heading text-[9px] tracking-widest uppercase px-2 py-0.5 rounded"
+              style={{ color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              Rescan
+            </button>
+          )}
+          <span className="font-heading text-[10px] font-bold tracking-widest text-blue-400">
+            B {blue !== null ? blue : blueRevealed}
+          </span>
+        </div>
       </div>
     );
   }

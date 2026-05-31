@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { CameraCapture } from "./components/CameraCapture";
 import { BoardOverlay } from "./components/BoardOverlay";
 import { VoiceControls } from "./components/VoiceControls";
@@ -16,6 +16,9 @@ export default function App() {
   const [guessesThisTurn, setGuessesThisTurn] = useState(0);
   const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  const [editingCard, setEditingCard] = useState<{ position: number; word: string } | null>(null);
+  const [editWord, setEditWord] = useState("");
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api.createSession()
@@ -82,6 +85,25 @@ export default function App() {
     setGuessesThisTurn(res.guesses_this_turn);
     return res;
   }, [sessionId]);
+
+  const handleRescan = useCallback(async () => {
+    if (!sessionId) return;
+    await api.resetBoard(sessionId);
+    setBoard(null);
+  }, [sessionId]);
+
+  const handleCardEdit = useCallback((position: number, word: string) => {
+    setEditingCard({ position, word });
+    setEditWord(word);
+    setTimeout(() => editInputRef.current?.select(), 50);
+  }, []);
+
+  const handleCardSave = useCallback(async () => {
+    if (!sessionId || !editingCard) return;
+    const updated = await api.updateCard(sessionId, editingCard.position, editWord);
+    setBoard(updated);
+    setEditingCard(null);
+  }, [sessionId, editingCard, editWord]);
 
   const handleTurnEnd = useCallback(async () => {
     if (!sessionId) return;
@@ -151,7 +173,13 @@ export default function App() {
                 autoStart
               />
               {board && (
-                <BoardOverlay board={board} lowConfidence={lowConfidence} overlay />
+                <BoardOverlay
+                  board={board}
+                  lowConfidence={lowConfidence}
+                  overlay
+                  onRescan={handleRescan}
+                  onCardEdit={handleCardEdit}
+                />
               )}
             </div>
           </div>
@@ -184,6 +212,30 @@ export default function App() {
 
         </div>
       </main>
+      {/* Card edit modal */}
+      {editingCard !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setEditingCard(null)}>
+          <div className="surface rounded-2xl p-5 space-y-4 w-72 mx-4" onClick={(e) => e.stopPropagation()}>
+            <p className="font-heading text-[10px] tracking-[0.25em] uppercase text-white/50">
+              Edit card {editingCard.position + 1}
+            </p>
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editWord}
+              onChange={(e) => setEditWord(e.target.value.toUpperCase())}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCardSave(); if (e.key === "Escape") setEditingCard(null); }}
+              autoFocus
+              className="w-full px-3 py-2 rounded-lg bg-transparent border border-white/20 focus:border-brand-gold outline-none font-heading text-lg text-white tracking-widest uppercase"
+              placeholder="WORD"
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setEditingCard(null)} className="flex-1 btn-ghost text-sm">Cancel</button>
+              <button onClick={handleCardSave} className="flex-1 btn-primary text-sm">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,18 @@ export interface BBox {
   h: number; // height,    0–1 fraction of image height
 }
 
+export interface Corner {
+  x: number; // 0–1 fraction of image width
+  y: number; // 0–1 fraction of image height
+}
+
+export interface CardCorners {
+  tl: Corner; // top-left
+  tr: Corner; // top-right
+  br: Corner; // bottom-right
+  bl: Corner; // bottom-left
+}
+
 export interface CardState {
   position: number;
   word: string | null;
@@ -16,6 +28,7 @@ export interface CardState {
   team: CardTeam | null;
   confidence: number;
   bbox?: BBox | null;
+  corners?: CardCorners | null;
 }
 
 export interface BoardState {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCamera } from "../hooks/useCamera";
 import type { BoardState } from "../types";
 
@@ -11,6 +11,7 @@ interface Props {
 }
 
 export function CameraCapture({ onBoardUpdate, onError, onFrameSend, autoStart }: Props) {
+  const [aspectRatio, setAspectRatio] = useState("4/3");
   const handleFrame = useCallback(
     async (base64: string) => {
       try {
@@ -48,8 +49,16 @@ export function CameraCapture({ onBoardUpdate, onError, onFrameSend, autoStart }
   }, [autoStart, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="relative w-full rounded-2xl overflow-hidden bg-surface-800" style={{ aspectRatio: "4/3" }}>
-      <video ref={videoRef} className="w-full h-full object-cover" playsInline muted autoPlay />
+    <div className="relative w-full rounded-2xl overflow-hidden bg-surface-800" style={{ aspectRatio }}>
+      <video
+        ref={videoRef}
+        className="w-full h-full object-cover"
+        playsInline muted autoPlay
+        onLoadedMetadata={() => {
+          const v = videoRef.current;
+          if (v?.videoWidth && v?.videoHeight) setAspectRatio(`${v.videoWidth}/${v.videoHeight}`);
+        }}
+      />
       <canvas ref={canvasRef} className="hidden" />
 
       {/* Scanning corner brackets */}

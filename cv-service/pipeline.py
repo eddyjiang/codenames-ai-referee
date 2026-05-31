@@ -152,27 +152,47 @@ def _prepare_grid(img: np.ndarray) -> tuple[np.ndarray, Optional[np.ndarray], in
     return work, M_inv, work.shape[0], work.shape[1], using_warp
 
 
-def _cell_bbox_in_original(
+def _cell_geometry(
     row: int, col: int,
     cell_h: float, cell_w: float,
     orig_h: int, orig_w: int,
     M_inv: Optional[np.ndarray],
     using_warp: bool,
-) -> dict:
-    x1, y1 = col * cell_w, row * cell_h
-    x2, y2 = x1 + cell_w, y1 + cell_h
-    corners = np.array([[[x1, y1]], [[x2, y1]], [[x2, y2]], [[x1, y2]]], dtype=np.float32)
+    margin: float = 0.03,
+) -> tuple[dict, dict]:
+    """Return (bbox, corners) for a grid cell mapped back to original image coordinates.
+
+    margin shrinks the cell inward so adjacent overlays don't bleed into each other.
+    """
+    x1 = col * cell_w + cell_w * margin
+    y1 = row * cell_h + cell_h * margin
+    x2 = (col + 1) * cell_w - cell_w * margin
+    y2 = (row + 1) * cell_h - cell_h * margin
+
+    pts = np.array([[[x1, y1]], [[x2, y1]], [[x2, y2]], [[x1, y2]]], dtype=np.float32)
     if using_warp and M_inv is not None:
-        orig = cv2.perspectiveTransform(corners, M_inv)
+        orig = cv2.perspectiveTransform(pts, M_inv)
     else:
-        orig = corners
+        orig = pts
+
+    def cx(i): return round(float(np.clip(orig[i, 0, 0] / orig_w, 0, 1)), 4)
+    def cy(i): return round(float(np.clip(orig[i, 0, 1] / orig_h, 0, 1)), 4)
+
+    corners = {
+        "tl": {"x": cx(0), "y": cy(0)},
+        "tr": {"x": cx(1), "y": cy(1)},
+        "br": {"x": cx(2), "y": cy(2)},
+        "bl": {"x": cx(3), "y": cy(3)},
+    }
+
     oxs, oys = orig[:, 0, 0], orig[:, 0, 1]
-    return {
+    bbox = {
         "x": round(float(np.clip(np.min(oxs) / orig_w, 0, 1)), 4),
         "y": round(float(np.clip(np.min(oys) / orig_h, 0, 1)), 4),
         "w": round(float(np.clip((np.max(oxs) - np.min(oxs)) / orig_w, 0, 1)), 4),
         "h": round(float(np.clip((np.max(oys) - np.min(oys)) / orig_h, 0, 1)), 4),
     }
+    return bbox, corners
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +244,7 @@ def analyze_board(image_base64: str) -> dict:
                         best_word = word
                         best_ocr_conf = norm_conf
 
-            bbox = _cell_bbox_in_original(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
+            bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
             card_conf = (color_conf + best_ocr_conf) / 2 if best_word else color_conf * 0.6
 
             cards.append({
@@ -234,6 +254,7 @@ def analyze_board(image_base64: str) -> dict:
                 "team": team,
                 "confidence": round(card_conf, 3),
                 "bbox": bbox,
+                "corners": corners,
             })
 
     detected = sum(1 for c in cards if c["word"])
@@ -279,6 +300,13 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
 
     cell_h, cell_w = warp_h / 5, warp_w / 5
 
+    # Run OCR once on the full warped board — used to detect text presence per cell
+    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    ocr_data: dict[str, Any] = pytesseract.image_to_data(
+        thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
+    )
+
     cards = []
     for row in range(5):
         for col in range(5):
@@ -291,8 +319,32 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
                 int(y1 + cell_h * margin): int(y2 - cell_h * margin),
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
-            team, revealed, color_conf = classify_color(crop)
-            bbox = _cell_bbox_in_original(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
+
+            # Text presence: any OCR hit with conf ≥ 30 inside this cell means word is still visible
+            has_text = False
+            for i, text in enumerate(ocr_data["text"]):
+                if not text.strip():
+                    continue
+                conf = int(ocr_data["conf"][i])
+                if conf < 30:
+                    continue
+                cx = ocr_data["left"][i] + ocr_data["width"][i] / 2
+                cy = ocr_data["top"][i] + ocr_data["height"][i] / 2
+                if x1 <= cx < x2 and y1 <= cy < y2:
+                    has_text = True
+                    break
+
+            # If text is visible → unrevealed; if hidden by tile → use color for team
+            if has_text:
+                team, revealed, color_conf = None, False, 0.88
+            else:
+                team, revealed, color_conf = classify_color(crop)
+                # Ensure revealed is true when covered (text gone means tile is present)
+                if not revealed:
+                    revealed = True
+                    color_conf = max(color_conf, 0.70)
+
+            bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
 
             cards.append({
                 "position": pos,
@@ -301,6 +353,7 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
                 "team": team,
                 "confidence": round(color_conf, 3),
                 "bbox": bbox,
+                "corners": corners,
             })
 
     overall_conf = sum(c["confidence"] for c in cards) / 25

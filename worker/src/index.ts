@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
-import { analyzeFrame, storeBoardState, getBoardState } from "./vision";
+import { analyzeFrame, storeBoardState, getBoardState, clearBoardState } from "./vision";
 import { validateClue, checkGuessLimit } from "./rules";
 import {
   getSession,
@@ -17,7 +17,7 @@ import { transcribeAudio, parseClueFromTranscript, synthesizeSpeech } from "./vo
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use("*", cors({ origin: "*", allowMethods: ["GET", "POST", "OPTIONS"] }));
+app.use("*", cors({ origin: "*", allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"] }));
 
 // ---------- Session ----------
 
@@ -107,6 +107,29 @@ app.post("/api/session/:id/frame", async (c) => {
     board: boardState,
     low_confidence: boardState.metadata.overall_confidence < 0.7,
   });
+});
+
+// ---------- Board reset (force rescan) ----------
+
+app.delete("/api/session/:id/board", async (c) => {
+  const sessionId = c.req.param("id");
+  await clearBoardState(sessionId, c.env.BOARD_KV);
+  const session = await getSession(sessionId, c.env.BOARD_KV);
+  session.board = null;
+  await saveSession(session, c.env.BOARD_KV);
+  return c.json({ ok: true });
+});
+
+// ---------- Card word correction ----------
+
+app.patch("/api/session/:id/board/card", async (c) => {
+  const sessionId = c.req.param("id");
+  const { position, word } = await c.req.json<{ position: number; word: string }>();
+  const board = await getBoardState(sessionId, c.env.BOARD_KV);
+  if (!board) return c.json({ error: "No board state" }, 404);
+  board.board[position].word = word.toUpperCase().trim() || null;
+  await storeBoardState(sessionId, board, c.env.BOARD_KV);
+  return c.json({ board });
 });
 
 // ---------- Clue validation (text) ----------
