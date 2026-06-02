@@ -148,14 +148,15 @@ def _is_blueish(h: float) -> bool:
 # factors handle the close tan-vs-bystander call.
 TILE_SAT_FLOOR = 55.0     # a coloured (red/blue) tile clears this; tan never does
 TILE_SAT_FACTOR = 1.6     # …and is well above the per-frame word-card baseline
-# Bystander (#bdbbb3) and word card (#e5e0cc) are too close in colour to separate
-# reliably under shadow, so colour does NOT make that call. Instead the word
-# itself decides: an unrevealed card shows dark printed text ("ink") on a light
-# face; a bystander's sepia face is mid-tone with almost no ink. Ink is measured
-# per cell relative to that cell's own brightness, so shadow can't fool it.
-TEXT_INK_THRESHOLD = 0.020  # ≥ this fraction of dark pixels ⇒ word visible ⇒ unrevealed
-DARK_VAL_FACTOR = 0.45      # assassin value < this × baseline
-DARK_VAL_FLOOR = 75.0       # …with an absolute floor for a dim board
+# Bystander and word card are too close in colour to separate, so colour does NOT
+# make that call — the printed word does, via CONTRAST DEPTH. Measured grayscale:
+# a word card's near-black text gives darkest/brightest ≈ 0.31; a bystander's
+# sepia face only reaches mid-gray ≈ 0.52. The ratio is shadow-invariant (uniform
+# dimming scales both ends together) and word-length-independent (it's how dark,
+# not how many dark pixels — which is what broke the earlier dark-fraction metric).
+TEXT_DARK_RATIO = 0.42   # darkness ratio BELOW this ⇒ near-black text present ⇒ unrevealed
+DARK_VAL_FACTOR = 0.45   # assassin value < this × baseline
+DARK_VAL_FLOOR = 75.0    # …with an absolute floor for a dim board
 
 
 def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
@@ -175,21 +176,23 @@ def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
     )
 
 
-def cell_text_ink(cell_bgr: np.ndarray) -> float:
-    """Fraction of dark 'ink' pixels — pixels much darker than this cell's own
-    bright level. An unrevealed card shows dark printed text on a light face
-    (meaningful ink); a covered bystander's sepia face is mid-tone (almost none).
-    The dark threshold is relative to the cell's own background, so overall
-    lighting / shadow doesn't change the result — only whether a *word* is there.
+def cell_text_darkness(cell_bgr: np.ndarray) -> float:
+    """Contrast depth: the cell's darkest content over its brightest (grayscale).
+    A word card has near-black printed text on a light face → low ratio (≈0.31);
+    a covered bystander's sepia face only reaches mid-gray → high ratio (≈0.52).
+    A ratio is shadow-invariant (uniform dimming scales numerator and denominator
+    together) and word-length-independent (it measures how dark the darkest
+    content is, not how many dark pixels) — which is what the dark-fraction
+    metric got wrong (long words had lots of pixels, short words few).
     """
     if cell_bgr.size == 0:
-        return 0.0
+        return 1.0
     gray = cv2.cvtColor(cell_bgr, cv2.COLOR_BGR2GRAY)
-    bg = float(np.percentile(gray, 80))  # the card face / tile background
-    if bg < 1.0:
-        return 0.0
-    dark = int(np.count_nonzero(gray < bg * 0.55))
-    return dark / float(gray.size)
+    lo = float(np.percentile(gray, 2))    # darkest content (text strokes, if any)
+    hi = float(np.percentile(gray, 85))   # the bright card face / tile background
+    if hi < 1.0:
+        return 1.0
+    return lo / hi
 
 
 def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, float]:
@@ -217,21 +220,21 @@ def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, floa
 
 
 def classify_cell(
-    hsv: tuple[float, float, float], ink: float, ref_s: float, ref_v: float
+    hsv: tuple[float, float, float], dark_ratio: float, ref_s: float, ref_v: float
 ) -> tuple[Optional[str], bool, float]:
     """Classify one cell. Colour resolves the unambiguous tiles; the printed word
-    resolves the close tan-vs-bystander call.
+    resolves the close tan-vs-bystander call via contrast depth.
 
       Red / Blue — their (lighting-stable) hue + saturation clearing the tile floor.
       Assassin   — much darker than the word cards.
       then, for the remaining tan cells:
-        word still visible (ink ≥ threshold) → Unrevealed
-        word covered      (little/no ink)    → Bystander
+        near-black text present (dark_ratio < threshold) → Unrevealed
+        no dark text           (dark_ratio ≥ threshold)  → Bystander
 
-    Reveal of a tan cell is decided by whether the word is there, not by colour —
-    so a shadowed word card (still showing its word) stays unrevealed, and a
-    covered bystander (no word, sepia mid-tone) is caught regardless of how close
-    its tan is to the cream card.
+    Reveal of a tan cell turns on whether the word's near-black text is there, not
+    on colour — so a shadowed word card (its text still near-black relative to its
+    own face) stays unrevealed, and a covered bystander (sepia, no near-black) is
+    caught regardless of how close its tan is to the cream card.
     """
     h, s, v = hsv
     ref_s = max(ref_s, 1.0)
@@ -243,9 +246,9 @@ def classify_cell(
         return "blue", True, 0.85
     if v < max(DARK_VAL_FLOOR, ref_v * DARK_VAL_FACTOR):
         return "assassin", True, 0.85
-    if ink >= TEXT_INK_THRESHOLD:
-        return None, False, 0.85          # word still showing → unrevealed
-    return "bystander", True, 0.80        # tan, no word → covered bystander
+    if dark_ratio < TEXT_DARK_RATIO:
+        return None, False, 0.85          # near-black text → word visible → unrevealed
+    return "bystander", True, 0.80        # tan, no dark text → covered bystander
 
 
 # ---------------------------------------------------------------------------
@@ -334,9 +337,9 @@ def analyze_board(image_base64: str) -> dict:
         thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
     )
 
-    # Pass 1: measure every cell's colour + text-ink, then derive the word-card baseline.
+    # Pass 1: measure every cell's colour + text contrast, then derive the word-card baseline.
     hsvs: list[tuple[float, float, float]] = []
-    inks: list[float] = []
+    darks: list[float] = []
     for row in range(5):
         for col in range(5):
             x1, y1 = col * cell_w, row * cell_h
@@ -347,10 +350,10 @@ def analyze_board(image_base64: str) -> dict:
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
             hsvs.append(cell_median_hsv(crop))
-            inks.append(cell_text_ink(crop))
+            darks.append(cell_text_darkness(crop))
     ref_s, ref_v = board_reference(hsvs)
 
-    # Pass 2: classify each cell (colour + word-ink), then match OCR words.
+    # Pass 2: classify each cell (colour + word contrast), then match OCR words.
     cards = []
     for row in range(5):
         for col in range(5):
@@ -359,8 +362,8 @@ def analyze_board(image_base64: str) -> dict:
             x2, y2 = x1 + cell_w, y1 + cell_h
 
             hsv = hsvs[pos]
-            ink = inks[pos]
-            team, revealed, color_conf = classify_cell(hsv, ink, ref_s, ref_v)
+            dr = darks[pos]
+            team, revealed, color_conf = classify_cell(hsv, dr, ref_s, ref_v)
 
             best_word: Optional[str] = None
             best_ocr_conf = 0.0
@@ -389,7 +392,7 @@ def analyze_board(image_base64: str) -> dict:
                 "confidence": round(card_conf, 3),
                 "bbox": bbox,
                 "corners": corners,
-                "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "ink": round(ink, 3)},
+                "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "dr": round(dr, 3)},
             })
 
     detected = sum(1 for c in cards if c["word"])
@@ -435,9 +438,9 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
 
     cell_h, cell_w = warp_h / 5, warp_w / 5
 
-    # Pass 1: measure every cell's colour + text-ink, then derive the word-card baseline.
+    # Pass 1: measure every cell's colour + text contrast, then derive the word-card baseline.
     hsvs: list[tuple[float, float, float]] = []
-    inks: list[float] = []
+    darks: list[float] = []
     for row in range(5):
         for col in range(5):
             x1, y1 = col * cell_w, row * cell_h
@@ -448,18 +451,18 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
             hsvs.append(cell_median_hsv(crop))
-            inks.append(cell_text_ink(crop))
+            darks.append(cell_text_darkness(crop))
     ref_s, ref_v = board_reference(hsvs)
 
-    # Pass 2: colour resolves red/blue/assassin; the printed word ("ink") resolves
-    # the tan cells — word visible → unrevealed, word covered → bystander. No OCR
-    # text-reading (that was unreliable); just whether dark ink is present.
+    # Pass 2: colour resolves red/blue/assassin; the printed word's contrast depth
+    # resolves the tan cells — near-black text → unrevealed, no dark text → covered
+    # bystander. No OCR text-reading (unreliable); just how dark the darkest content is.
     cards = []
     for pos in range(25):
         row, col = divmod(pos, 5)
         hsv = hsvs[pos]
-        ink = inks[pos]
-        team, revealed, color_conf = classify_cell(hsv, ink, ref_s, ref_v)
+        dr = darks[pos]
+        team, revealed, color_conf = classify_cell(hsv, dr, ref_s, ref_v)
         bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
         cards.append({
             "position": pos,
@@ -469,7 +472,7 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
             "confidence": round(color_conf, 3),
             "bbox": bbox,
             "corners": corners,
-            "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "ink": round(ink, 3)},
+            "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "dr": round(dr, 3)},
         })
 
     overall_conf = sum(c["confidence"] for c in cards) / 25

@@ -29,8 +29,8 @@ export interface CardState {
   confidence: number;
   bbox?: BBox | null;
   corners?: CardCorners | null;
-  // Per-cell median HSV + text-ink fraction from the CV classifier (tuning aid).
-  debug?: { h: number; s: number; v: number; ink?: number } | null;
+  // Per-cell median HSV + text contrast-depth ratio from the CV classifier (tuning aid).
+  debug?: { h: number; s: number; v: number; dr?: number } | null;
 }
 
 export interface BoardState {
