@@ -33,11 +33,13 @@ export const api = {
   sendFrame(
     sessionId: string,
     imageBase64: string,
-    mediaType = "image/jpeg"
+    mediaType = "image/jpeg",
+    engine: "auto" | "cv" = "auto"
   ): Promise<{ board: BoardState; low_confidence: boolean }> {
     return post(`/session/${sessionId}/frame`, {
       image: imageBase64,
       media_type: mediaType,
+      engine,
     });
   },
 

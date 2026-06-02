@@ -55,28 +55,66 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
 # Board detection & perspective warp
 # ---------------------------------------------------------------------------
 
-def find_board_corners(img: np.ndarray) -> Optional[np.ndarray]:
-    """Find the Codenames board as the largest quadrilateral in the image."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 120)
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
+def _best_quad(contours, img_area: float, min_frac: float) -> Optional[np.ndarray]:
+    """Largest convex 4-gon among the biggest contours.
 
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    img_area = img.shape[0] * img.shape[1]
-
+    Approximates the *convex hull* (the board outline is convex, so this drops
+    the concavities the 25-card grid carves into the raw contour) and tries
+    several tolerances, so a slightly irregular board outline still resolves to
+    four corners instead of being rejected.
+    """
     best_quad = None
     best_area = 0.0
     for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
         area = cv2.contourArea(contour)
-        if area < img_area * 0.10:
+        if area < img_area * min_frac:
             break
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.025 * peri, True)
-        if len(approx) == 4 and area > best_area:
-            best_area = area
-            best_quad = approx
+        hull = cv2.convexHull(contour)
+        peri = cv2.arcLength(hull, True)
+        for eps in (0.02, 0.03, 0.04, 0.05, 0.07, 0.10):
+            approx = cv2.approxPolyDP(hull, eps * peri, True)
+            if len(approx) == 4 and cv2.isContourConvex(approx) and area > best_area:
+                best_area = area
+                best_quad = approx
+                break
     return best_quad
+
+
+def find_board_corners(img: np.ndarray) -> Optional[np.ndarray]:
+    """Find the Codenames board as the largest quadrilateral in the image.
+
+    Most precise first:
+      1. Edge contours → largest convex 4-gon (hull + several approx tolerances).
+      2. Fallback: the minimum-area rotated rectangle of the largest contour — a
+         fitted board rectangle, far better than gridding the whole frame. Only
+         used when it covers a plausible board-sized sub-region (15–92% of the
+         image); a frame-spanning blob is rejected so we don't pretend to detect.
+    Returns four corner points, or None if nothing board-like is found.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 120)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=2)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    img_area = float(img.shape[0] * img.shape[1])
+
+    # 1. Clean convex quad.
+    quad = _best_quad(contours, img_area, min_frac=0.10)
+    if quad is not None:
+        return quad
+
+    # 2. Rotated-rectangle fallback over the largest board-sized contour.
+    largest = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(largest)
+    (_, (rw, rh), _) = rect
+    if img_area * 0.15 <= rw * rh <= img_area * 0.92:
+        return cv2.boxPoints(rect).astype(np.float32)
+
+    return None
 
 
 def warp_board(img: np.ndarray, corners: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

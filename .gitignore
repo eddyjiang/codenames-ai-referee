@@ -5,7 +5,12 @@ dist/
 .env.local
 *.local
 
-# Wrangler local secrets (contains API keys — never commit)
+# Claude Code local settings (machine-specific; never commit)
+.claude/settings.local.json
+
+# Wrangler local secrets (contains API keys — never commit).
+# Bare name also matches a .dev.vars in any other package, not just worker/.
+.dev.vars
 worker/.dev.vars
 
 # Python (cv-service)

@@ -79,6 +79,7 @@ app.post("/api/session/:id/frame", async (c) => {
   const body = await c.req.json<{
     image: string; // base64
     media_type?: "image/jpeg" | "image/png" | "image/webp";
+    engine?: "auto" | "cv"; // "cv" forces the CV service end-to-end (test harness)
   }>();
 
   if (!body.image) {
@@ -86,12 +87,13 @@ app.post("/api/session/:id/frame", async (c) => {
   }
 
   const mediaType = body.media_type ?? "image/jpeg";
+  const engine = body.engine ?? "auto";
 
   const existingBoard = await getBoardState(sessionId, c.env.BOARD_KV);
 
   let boardState;
   try {
-    boardState = await analyzeFrame(body.image, mediaType, c.env, existingBoard ?? undefined);
+    boardState = await analyzeFrame(body.image, mediaType, c.env, existingBoard ?? undefined, engine);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

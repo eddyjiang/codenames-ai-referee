@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from "react";
+import { captureVideoFrame } from "../lib/captureFrame";
 
 interface UseCameraOptions {
   onFrame: (base64: string) => void;
@@ -18,38 +19,9 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
   const captureFrame = useCallback((): string | null => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return null;
-
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-
-    // If video and screen aspect ratios don't match, the stream needs rotation
-    const screenIsPortrait = window.innerHeight > window.innerWidth;
-    const videoIsPortrait = vh > vw;
-    const needsRotation = screenIsPortrait !== videoIsPortrait;
-
-    if (needsRotation) {
-      const angle = (screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0) as number;
-      // angles 0/90 → rotate CW; 180/270 → rotate CCW
-      const cw = angle === 0 || angle === 90;
-      canvas.width = vh;
-      canvas.height = vw;
-      if (cw) {
-        ctx.translate(vh, 0);
-        ctx.rotate(Math.PI / 2);
-      } else {
-        ctx.translate(0, vw);
-        ctx.rotate(-Math.PI / 2);
-      }
-    } else {
-      canvas.width = vw;
-      canvas.height = vh;
-    }
-
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+    if (!video || !canvas) return null;
+    // Rotate to compensate for mobile sensor orientation on the live camera path.
+    return captureVideoFrame(video, canvas, { rotateForDevice: true });
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -88,6 +60,11 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
 
   const startScanning = useCallback(() => {
     if (!active) return;
+    // Idempotent: never orphan an already-running interval.
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     setScanning(true);
 
     const tick = async () => {

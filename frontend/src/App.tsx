@@ -3,8 +3,13 @@ import { CameraCapture } from "./components/CameraCapture";
 import { BoardOverlay } from "./components/BoardOverlay";
 import { VoiceControls } from "./components/VoiceControls";
 import { GameSetup } from "./components/GameSetup";
+import { VideoTestView } from "./components/VideoTestView";
 import { api } from "./lib/api";
 import type { BoardState, Team, RulesResult } from "./types";
+
+const isVideoTest =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("test") === "video";
 
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -21,9 +26,11 @@ export default function App() {
   const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    let ignore = false;
     api.createSession()
-      .then(({ session_id }) => setSessionId(session_id))
-      .catch((e: Error) => setInitError(e.message));
+      .then(({ session_id }) => { if (!ignore) setSessionId(session_id); })
+      .catch((e: Error) => { if (!ignore) setInitError(e.message); });
+    return () => { ignore = true; };
   }, []);
 
   const handleBoardUpdate = useCallback((b: BoardState, low: boolean) => {
@@ -136,6 +143,12 @@ export default function App() {
     );
   }
 
+  // CV test harness — feed a recorded game video through the pipeline instead of
+  // the live camera. Reachable at ?test=video.
+  if (isVideoTest) {
+    return <VideoTestView sessionId={sessionId} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
@@ -147,15 +160,23 @@ export default function App() {
             AI Referee
           </p>
         </div>
-        {gameId && (
-          <div
-            className="flex items-center gap-1.5 rounded-full px-3 py-1"
-            style={{ background: "rgba(245,165,33,0.08)", border: "1px solid rgba(245,165,33,0.25)" }}
+        <div className="flex items-center gap-3">
+          <a
+            href="?test=video"
+            className="font-heading text-[10px] tracking-widest uppercase text-white/40 hover:text-brand-gold transition-colors"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-brand-gold animate-pulse" />
-            <span className="font-heading text-[10px] tracking-widest uppercase text-brand-gold">Live</span>
-          </div>
-        )}
+            🎬 Video test
+          </a>
+          {gameId && (
+            <div
+              className="flex items-center gap-1.5 rounded-full px-3 py-1"
+              style={{ background: "rgba(245,165,33,0.08)", border: "1px solid rgba(245,165,33,0.25)" }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-gold animate-pulse" />
+              <span className="font-heading text-[10px] tracking-widest uppercase text-brand-gold">Live</span>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* Main layout: camera+board left (75%), game panel right (25%) */}

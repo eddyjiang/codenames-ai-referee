@@ -1,13 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BoardState, Env } from "./types";
 import { VISION_PROMPT } from "./prompts";
+import { selectVisionPlan } from "./vision-plan";
+import type { VisionEngine } from "./vision-plan";
 
 const OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-
-const CV_MIN_CONFIDENCE = 0.72;
-const CV_MIN_WORDS = 20;       // minimum words to accept a full CV scan
-const LOCK_THRESHOLD = 1;      // lock words after any LLM scan with ≥1 word
 
 // ---------------------------------------------------------------------------
 // Tier 1: dedicated CV service (DigitalOcean)
@@ -124,57 +122,62 @@ function parseVisionResponse(raw: string): BoardState {
 
 // ---------------------------------------------------------------------------
 // Public entry point
-// Full scans (first frame): LLM only — better OCR, handles perspective/angle
-// Track scans (subsequent frames): CV service only — color classification, no OCR
+//
+// engine "auto" (production): full scans (first frame) → LLM (best OCR, handles
+//   perspective/angle); track scans (subsequent frames) → CV service (colour
+//   classification, no OCR).
+// engine "cv" (pure-CV test): every frame → CV service — full mode (OCR +
+//   perspective + colour) until words lock, then track mode. No LLM.
 // ---------------------------------------------------------------------------
 
 export async function analyzeFrame(
   imageBase64: string,
   mediaType: "image/jpeg" | "image/png" | "image/webp",
   env: Env,
-  existingBoard?: BoardState
+  existingBoard?: BoardState,
+  engine: VisionEngine = "auto"
 ): Promise<BoardState> {
-  // Use track mode if we already have a locked board with ≥20 words
-  const lockedWords = existingBoard?.board.map((c) => c.word ?? null) ?? null;
-  const lockedWordCount = lockedWords?.filter(Boolean).length ?? 0;
-  const useTrack = lockedWordCount >= LOCK_THRESHOLD;
+  const plan = selectVisionPlan(engine, existingBoard, !!env.CV_SERVICE_URL);
 
-  // Tier 1: CV service — track mode only (color classification, no OCR)
-  if (env.CV_SERVICE_URL && useTrack) {
+  // ── CV service backend (track for auto; full + track for pure-cv) ──
+  if (plan.backend === "cv") {
+    if (!env.CV_SERVICE_URL) {
+      throw new Error("CV engine requested but CV_SERVICE_URL is not configured.");
+    }
     try {
       const result = await analyzeViaCVService(
         imageBase64,
         env.CV_SERVICE_URL,
         env.CV_API_SECRET ?? "",
-        useTrack ? "track" : "full",
-        useTrack ? lockedWords! : undefined
+        plan.mode,
+        plan.knownWords ?? undefined
       );
-      // Track mode only — full scans always go to LLM for better OCR accuracy
-      if (useTrack) {
-        result.captured_at = Date.now();
-        if (lockedWords && existingBoard) {
-          result.board.forEach((c, i) => {
-            c.word = lockedWords[i] ?? c.word ?? null;
-            const locked = existingBoard.board[i];
-            // Lock bbox for stability; use fresh CV corners when available, fall back to locked
-            if (locked?.bbox) c.bbox = locked.bbox;
-            if (!c.corners && locked?.corners) c.corners = locked.corners;
-          });
-        }
-        return result;
+      result.captured_at = Date.now();
+      // Track mode: keep locked words and a stable bbox; prefer fresh CV corners.
+      if (plan.mode === "track" && plan.knownWords && existingBoard) {
+        result.board.forEach((c, i) => {
+          c.word = plan.knownWords![i] ?? c.word ?? null;
+          const locked = existingBoard.board[i];
+          if (locked?.bbox) c.bbox = locked.bbox;
+          if (!c.corners && locked?.corners) c.corners = locked.corners;
+        });
       }
+      return result;
     } catch (e) {
-      console.error("CV service unavailable:", (e as Error).message);
-      // In track mode, return existing board unchanged rather than calling LLM again —
-      // words and bboxes stay frozen, no more flickering
-      if (useTrack && existingBoard) {
+      console.error("CV service error:", (e as Error).message);
+      // Pure-cv test mode: surface the error so the tester sees what failed.
+      if (engine === "cv") throw e;
+      // auto track: freeze the existing board (words/bboxes stay put, no flicker)
+      // instead of re-OCRing via the LLM.
+      if (plan.mode === "track" && existingBoard) {
         existingBoard.captured_at = Date.now();
         return existingBoard;
       }
+      // otherwise fall through to the LLM tier below.
     }
   }
 
-  // Tier 2: LLM vision (OpenRouter preferred, Anthropic SDK as final fallback)
+  // ── LLM vision (auto full scans; OpenRouter preferred, Anthropic SDK fallback) ──
   let raw: string;
   if (env.OPENROUTER_API_KEY) {
     raw = await analyzeViaOpenRouter(imageBase64, mediaType, env.OPENROUTER_API_KEY);

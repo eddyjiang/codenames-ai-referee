@@ -159,6 +159,32 @@ wrangler d1 execute codenames-db --local --command "SELECT * FROM clues LIMIT 10
 wrangler d1 execute codenames-db --local --command "SELECT * FROM interventions;"
 ```
 
+### Video CV test harness
+
+Evaluate the CV pipeline against a **recorded game** without a live camera — the
+video plays in the normal interface with overlays drawn on top, "as if it were a
+live feed."
+
+1. Run `npm run dev`, then open `http://localhost:5173/?test=video` (or click
+   **🎬 Video test** in the header).
+2. Drop in / choose a recorded game video. Press **Start capture**.
+3. Two toggles:
+   - **Backend path** — *Auto* (production: LLM reads the 25 words once, then the
+     CV service tracks perspective + team colours) vs *Pure CV* (every frame
+     through the CV service — OCR + perspective on the first frame, colour
+     tracking after; no LLM).
+   - **Playback mode** — *Real-time* (plays at speed, captures on an adjustable
+     interval, overlay lags slightly like a live feed) vs *Frame-step* (pauses on
+     each captured frame until the result returns, so the overlay is always
+     aligned to the exact frame).
+4. The **Diagnostics** panel shows per-frame latency, backend `notes`
+   (`cv:full …` / `cv:track …`), overall confidence, words read, revealed count,
+   and the partial-visibility flag.
+
+Under the hood this just adds an optional `engine` field to the frame endpoint
+(`"auto"` default | `"cv"`); the rest of the pipeline is unchanged. No local
+Python is needed — it uses the CV service already configured via `CV_SERVICE_URL`.
+
 ---
 
 ## Deployment
@@ -197,15 +223,19 @@ KV and D1 bindings are configured in `worker/wrangler.toml` — not env vars at 
 │       ├── components/
 │       │   ├── CameraCapture.tsx   getUserMedia + frame capture
 │       │   ├── BoardOverlay.tsx    5×5 board state display
+│       │   ├── VideoTestView.tsx   video-fed CV test harness (?test=video)
 │       │   └── VoiceControls.tsx   mic + TTS playback
 │       ├── hooks/
 │       │   ├── useCamera.ts        camera lifecycle + interval
 │       │   └── useVoice.ts         MediaRecorder + audio playback
-│       └── lib/api.ts              typed fetch wrappers
+│       └── lib/
+│           ├── api.ts              typed fetch wrappers
+│           └── captureFrame.ts     shared <video>→canvas→base64 capture
 ├── worker/            Cloudflare Worker
 │   └── src/
 │       ├── index.ts                Hono router (all endpoints)
 │       ├── vision.ts               Claude vision calls + KV storage
+│       ├── vision-plan.ts          pure frame-routing decision (auto/cv)
 │       ├── rules.ts                Codenames rules engine (pure functions)
 │       ├── session.ts              KV session state + D1 persistence
 │       ├── voice.ts                Whisper STT + OpenAI TTS
