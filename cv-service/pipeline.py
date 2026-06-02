@@ -246,9 +246,14 @@ def classify_cell(
         return "blue", True, 0.85
     if v < max(DARK_VAL_FLOOR, ref_v * DARK_VAL_FACTOR):
         return "assassin", True, 0.85
-    if dark_ratio < TEXT_DARK_RATIO:
-        return None, False, 0.85          # near-black text → word visible → unrevealed
-    return "bystander", True, 0.80        # tan, no dark text → covered bystander
+    # STOPGAP: a bystander tile and an unrevealed word card can't be told apart
+    # from a single frame on this card set (colour overlaps; the bystander's
+    # near-black mouth defeats the contrast-depth test). Until temporal/LLM
+    # detection is added, tan cells default to UNREVEALED — missing a bystander
+    # beats flooding false bystanders onto the word cards. dark_ratio is still
+    # reported in debug for tuning. See TEXT_DARK_RATIO for the parked threshold.
+    _ = dark_ratio
+    return None, False, 0.80
 
 
 # ---------------------------------------------------------------------------

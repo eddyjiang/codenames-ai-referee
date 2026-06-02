@@ -47,6 +47,8 @@ export interface BoardState {
     notes: string;
   };
   captured_at: number;
+  // Timestamp of the last authoritative LLM reveal/team read ("auto" engine).
+  llm_at?: number;
 }
 
 export interface RuleViolation {

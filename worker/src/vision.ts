@@ -3,6 +3,7 @@ import type { BoardState, Env } from "./types";
 import { VISION_PROMPT } from "./prompts";
 import { selectVisionPlan } from "./vision-plan";
 import type { VisionEngine } from "./vision-plan";
+import { mergeCvTrack, mergeLlmReveal } from "./vision-merge";
 
 const OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
@@ -120,14 +121,32 @@ function parseVisionResponse(raw: string): BoardState {
   }
 }
 
+async function llmVisionRaw(
+  imageBase64: string,
+  mediaType: "image/jpeg" | "image/png" | "image/webp",
+  env: Env
+): Promise<string> {
+  if (env.OPENROUTER_API_KEY) {
+    return analyzeViaOpenRouter(imageBase64, mediaType, env.OPENROUTER_API_KEY);
+  }
+  if (env.ANTHROPIC_API_KEY) {
+    return analyzeViaAnthropic(imageBase64, mediaType, env.ANTHROPIC_API_KEY);
+  }
+  throw new Error(
+    "No vision backend configured. Set CV_SERVICE_URL, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY."
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 //
-// engine "auto" (production): full scans (first frame) → LLM (best OCR, handles
-//   perspective/angle); track scans (subsequent frames) → CV service (colour
-//   classification, no OCR).
-// engine "cv" (pure-CV test): every frame → CV service — full mode (OCR +
-//   perspective + colour) until words lock, then track mode. No LLM.
+// engine "auto" (production): LLM reads words on the first scan; the CV service
+//   then tracks colour/perspective fast on most frames, while every
+//   LLM_REVEAL_INTERVAL_MS the LLM does an authoritative reveal/team read
+//   (CV alone can't tell a bystander tile from an unrevealed word card). CV
+//   frames carry the LLM's last verdict forward (mergeCvTrack).
+// engine "cv" (pure-CV test): every frame → CV service. No LLM, so bystanders
+//   are not detected (parked as unrevealed) — that's the limitation we proved.
 // ---------------------------------------------------------------------------
 
 export async function analyzeFrame(
@@ -137,7 +156,14 @@ export async function analyzeFrame(
   existingBoard?: BoardState,
   engine: VisionEngine = "auto"
 ): Promise<BoardState> {
-  const plan = selectVisionPlan(engine, existingBoard, !!env.CV_SERVICE_URL);
+  const now = Date.now();
+  const caps = {
+    cv: !!env.CV_SERVICE_URL,
+    llm: !!(env.OPENROUTER_API_KEY || env.ANTHROPIC_API_KEY),
+  };
+  const lastLlmAt = existingBoard?.llm_at ?? 0;
+  const plan = selectVisionPlan(engine, existingBoard, caps, now, lastLlmAt);
+  const lockedWords = plan.knownWords;
 
   // ── CV service backend (track for auto; full + track for pure-cv) ──
   if (plan.backend === "cv") {
@@ -150,47 +176,39 @@ export async function analyzeFrame(
         env.CV_SERVICE_URL,
         env.CV_API_SECRET ?? "",
         plan.mode,
-        plan.knownWords ?? undefined
+        lockedWords ?? undefined
       );
-      result.captured_at = Date.now();
-      // Track mode: keep locked words and a stable bbox; prefer fresh CV corners.
-      if (plan.mode === "track" && plan.knownWords && existingBoard) {
-        result.board.forEach((c, i) => {
-          c.word = plan.knownWords![i] ?? c.word ?? null;
-          const locked = existingBoard.board[i];
-          if (locked?.bbox) c.bbox = locked.bbox;
-          if (!c.corners && locked?.corners) c.corners = locked.corners;
-        });
+      result.captured_at = now;
+      result.llm_at = lastLlmAt; // CV doesn't refresh the LLM clock
+      if (plan.mode === "track" && lockedWords && existingBoard) {
+        mergeCvTrack(result, existingBoard, lockedWords);
       }
       return result;
     } catch (e) {
       console.error("CV service error:", (e as Error).message);
-      // Pure-cv test mode: surface the error so the tester sees what failed.
-      if (engine === "cv") throw e;
-      // auto track: freeze the existing board (words/bboxes stay put, no flicker)
-      // instead of re-OCRing via the LLM.
+      if (engine === "cv") throw e; // pure-cv test: surface the error
+      // auto track: freeze the existing board instead of re-OCRing via the LLM.
       if (plan.mode === "track" && existingBoard) {
-        existingBoard.captured_at = Date.now();
+        existingBoard.captured_at = now;
         return existingBoard;
       }
       // otherwise fall through to the LLM tier below.
     }
   }
 
-  // ── LLM vision (auto full scans; OpenRouter preferred, Anthropic SDK fallback) ──
-  let raw: string;
-  if (env.OPENROUTER_API_KEY) {
-    raw = await analyzeViaOpenRouter(imageBase64, mediaType, env.OPENROUTER_API_KEY);
-  } else if (env.ANTHROPIC_API_KEY) {
-    raw = await analyzeViaAnthropic(imageBase64, mediaType, env.ANTHROPIC_API_KEY);
-  } else {
-    throw new Error(
-      "No vision backend configured. Set CV_SERVICE_URL, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY."
-    );
-  }
-
+  // ── LLM vision (first scan, periodic reveal read, or fallback) ──
+  const raw = await llmVisionRaw(imageBase64, mediaType, env);
   const parsed = parseVisionResponse(raw);
-  parsed.captured_at = Date.now();
+  parsed.captured_at = now;
+  parsed.llm_at = now;
+  if (!parsed.metadata) {
+    parsed.metadata = { overall_confidence: 0.8, issues: [], partial_visibility: false, notes: "" };
+  }
+  parsed.metadata.notes = `llm:${plan.reason === "llm-reveal" ? "reveal" : "full"}`;
+  // Periodic reveal read: LLM owns teams/reveal; keep locked words + CV geometry.
+  if (plan.reason === "llm-reveal" && lockedWords && existingBoard) {
+    mergeLlmReveal(parsed, existingBoard, lockedWords);
+  }
   return parsed;
 }
 

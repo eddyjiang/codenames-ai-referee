@@ -1,34 +1,27 @@
 #!/usr/bin/env node
 /**
- * Unit tests for selectVisionPlan — the pure frame-routing decision.
- * No network, no Cloudflare. Run:
- *
+ * Unit tests for selectVisionPlan — the pure frame-routing decision, including
+ * the periodic LLM reveal-read scheduling. No network, no Cloudflare.
  *   node scripts/test-vision-plan.mjs
- *
- * (Node ≥ 23.6 strips TypeScript types on import automatically.)
  */
 import assert from "node:assert/strict";
-import { selectVisionPlan } from "../worker/src/vision-plan.ts";
+import { selectVisionPlan, LLM_REVEAL_INTERVAL_MS } from "../worker/src/vision-plan.ts";
 
 function board(words) {
   return {
-    board: words.map((w, i) => ({
-      position: i,
-      word: w,
-      revealed: false,
-      team: null,
-      confidence: 1,
-    })),
+    board: words.map((w, i) => ({ position: i, word: w, revealed: false, team: null, confidence: 1 })),
     score: { red_remaining: null, blue_remaining: null, confidence: 0 },
     metadata: { overall_confidence: 1, issues: [], partial_visibility: false, notes: "" },
     captured_at: 0,
   };
 }
-
 const noBoard = undefined;
 const zeroWords = board(Array(25).fill(null));
-const oneWord = board(["AMAZON", ...Array(24).fill(null)]);
+const locked = board(["AMAZON", ...Array(24).fill(null)]);
 const lockedList = ["AMAZON", ...Array(24).fill(null)];
+const BOTH = { cv: true, llm: true };
+const CV_ONLY = { cv: true, llm: false };
+const LLM_ONLY = { cv: false, llm: true };
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -37,48 +30,40 @@ function check(name, actual, expected) {
   passed++;
 }
 
-// ── auto engine ──────────────────────────────────────────────────────────────
-check(
-  "auto + no board → LLM full",
-  selectVisionPlan("auto", noBoard, true),
-  { backend: "llm", mode: "full", knownWords: null }
-);
-check(
-  "auto + board with 0 readable words → LLM full (no lock yet)",
-  selectVisionPlan("auto", zeroWords, true),
-  { backend: "llm", mode: "full", knownWords: null }
-);
-check(
-  "auto + locked words + CV available → CV track",
-  selectVisionPlan("auto", oneWord, true),
-  { backend: "cv", mode: "track", knownWords: lockedList }
-);
-check(
-  "auto + locked words but NO CV service → LLM full (fallback)",
-  selectVisionPlan("auto", oneWord, false),
-  { backend: "llm", mode: "full", knownWords: null }
-);
-
 // ── pure-cv engine ───────────────────────────────────────────────────────────
-check(
-  "cv + no board → CV full (OCR)",
-  selectVisionPlan("cv", noBoard, true),
-  { backend: "cv", mode: "full", knownWords: null }
-);
-check(
-  "cv + board with 0 words → CV full (still needs OCR)",
-  selectVisionPlan("cv", zeroWords, true),
-  { backend: "cv", mode: "full", knownWords: null }
-);
-check(
-  "cv + locked words → CV track",
-  selectVisionPlan("cv", oneWord, true),
-  { backend: "cv", mode: "track", knownWords: lockedList }
-);
-check(
-  "cv requested plans CV regardless of hasCVService flag (caller enforces URL)",
-  selectVisionPlan("cv", noBoard, false),
-  { backend: "cv", mode: "full", knownWords: null }
-);
+check("cv + no board → CV full",
+  selectVisionPlan("cv", noBoard, BOTH),
+  { backend: "cv", mode: "full", knownWords: null, reason: "cv-full" });
+check("cv + locked → CV track",
+  selectVisionPlan("cv", locked, BOTH),
+  { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
+
+// ── auto: first scan ─────────────────────────────────────────────────────────
+check("auto + no board → LLM first-scan",
+  selectVisionPlan("auto", noBoard, BOTH, 0, 0),
+  { backend: "llm", mode: "full", knownWords: null, reason: "first-scan" });
+check("auto + 0 words → LLM first-scan",
+  selectVisionPlan("auto", zeroWords, BOTH, 0, 0),
+  { backend: "llm", mode: "full", knownWords: null, reason: "first-scan" });
+
+// ── auto: locked, between LLM reads → fast CV track ──────────────────────────
+check("auto + locked + recent LLM → CV track",
+  selectVisionPlan("auto", locked, BOTH, 5_000, 0),  // 5s since last LLM < interval
+  { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
+
+// ── auto: locked, LLM read is due → LLM reveal ───────────────────────────────
+check("auto + locked + LLM due → LLM reveal",
+  selectVisionPlan("auto", locked, BOTH, LLM_REVEAL_INTERVAL_MS + 1, 0),
+  { backend: "llm", mode: "full", knownWords: lockedList, reason: "llm-reveal" });
+
+// ── auto: locked, no CV service → LLM every frame ────────────────────────────
+check("auto + locked + no CV → LLM reveal",
+  selectVisionPlan("auto", locked, LLM_ONLY, 1_000, 0),
+  { backend: "llm", mode: "full", knownWords: lockedList, reason: "llm-reveal" });
+
+// ── auto: locked, due but no LLM configured → fall back to CV track ──────────
+check("auto + locked + due + no LLM → CV track",
+  selectVisionPlan("auto", locked, CV_ONLY, LLM_REVEAL_INTERVAL_MS + 1, 0),
+  { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
 
 console.log(`\n${passed}/8 passed`);

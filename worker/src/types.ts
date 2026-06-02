@@ -51,6 +51,8 @@ export interface BoardState {
   score: BoardScore;
   metadata: BoardMetadata;
   captured_at: number;
+  // Timestamp of the last authoritative LLM reveal/team read ("auto" engine).
+  llm_at?: number;
 }
 
 export interface RuleViolation {
