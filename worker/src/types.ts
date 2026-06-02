@@ -29,8 +29,8 @@ export interface CardState {
   confidence: number;
   bbox?: BBox | null;
   corners?: CardCorners | null;
-  // Per-cell median HSV from the CV color classifier (passes through from the CV service).
-  debug?: { h: number; s: number; v: number } | null;
+  // Per-cell median HSV + text-ink fraction from the CV classifier (passes through).
+  debug?: { h: number; s: number; v: number; ink?: number } | null;
 }
 
 export interface BoardScore {

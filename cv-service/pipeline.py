@@ -148,13 +148,14 @@ def _is_blueish(h: float) -> bool:
 # factors handle the close tan-vs-bystander call.
 TILE_SAT_FLOOR = 55.0     # a coloured (red/blue) tile clears this; tan never does
 TILE_SAT_FACTOR = 1.6     # …and is well above the per-frame word-card baseline
-# Bystander (#bdbbb3) vs word card (#e5e0cc): S ≈ 0.48× and V ≈ 0.83× the word
-# card — grayer AND dimmer. Requiring *both* avoids false bystanders from a word
-# card that merely glares desaturated (low S, still bright) or sits in shadow.
-GRAY_SAT_FACTOR = 0.70    # bystander saturation ≲ this × baseline
-GRAY_VAL_FACTOR = 0.90    # …AND value ≲ this × baseline
-DARK_VAL_FACTOR = 0.45    # assassin value < this × baseline
-DARK_VAL_FLOOR = 75.0     # …with an absolute floor for a dim board
+# Bystander (#bdbbb3) and word card (#e5e0cc) are too close in colour to separate
+# reliably under shadow, so colour does NOT make that call. Instead the word
+# itself decides: an unrevealed card shows dark printed text ("ink") on a light
+# face; a bystander's sepia face is mid-tone with almost no ink. Ink is measured
+# per cell relative to that cell's own brightness, so shadow can't fool it.
+TEXT_INK_THRESHOLD = 0.020  # ≥ this fraction of dark pixels ⇒ word visible ⇒ unrevealed
+DARK_VAL_FACTOR = 0.45      # assassin value < this × baseline
+DARK_VAL_FLOOR = 75.0       # …with an absolute floor for a dim board
 
 
 def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
@@ -172,6 +173,23 @@ def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
         float(np.median(hsv[:, :, 1])),
         float(np.median(hsv[:, :, 2])),
     )
+
+
+def cell_text_ink(cell_bgr: np.ndarray) -> float:
+    """Fraction of dark 'ink' pixels — pixels much darker than this cell's own
+    bright level. An unrevealed card shows dark printed text on a light face
+    (meaningful ink); a covered bystander's sepia face is mid-tone (almost none).
+    The dark threshold is relative to the cell's own background, so overall
+    lighting / shadow doesn't change the result — only whether a *word* is there.
+    """
+    if cell_bgr.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(cell_bgr, cv2.COLOR_BGR2GRAY)
+    bg = float(np.percentile(gray, 80))  # the card face / tile background
+    if bg < 1.0:
+        return 0.0
+    dark = int(np.count_nonzero(gray < bg * 0.55))
+    return dark / float(gray.size)
 
 
 def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, float]:
@@ -198,20 +216,22 @@ def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, floa
     return sats[i], vals[i]
 
 
-def classify_relative(
-    hsv: tuple[float, float, float], ref_s: float, ref_v: float
+def classify_cell(
+    hsv: tuple[float, float, float], ink: float, ref_s: float, ref_v: float
 ) -> tuple[Optional[str], bool, float]:
-    """Classify one cell *relative* to the frame's word-card baseline.
+    """Classify one cell. Colour resolves the unambiguous tiles; the printed word
+    resolves the close tan-vs-bystander call.
 
-    Lighting-invariant — tests combine an absolute saturation floor (the ~6× gap
-    between coloured tiles and tan is huge and stable) with ratios against the
-    per-frame word-card baseline:
       Red / Blue — their (lighting-stable) hue + saturation clearing the tile floor.
       Assassin   — much darker than the word cards.
-      Bystander  — grayer AND dimmer than the word cards (both required).
-      Unrevealed — looks like the tan baseline.
-    Red/blue are checked before assassin so a dark-but-saturated tile isn't
-    mistaken for the assassin.
+      then, for the remaining tan cells:
+        word still visible (ink ≥ threshold) → Unrevealed
+        word covered      (little/no ink)    → Bystander
+
+    Reveal of a tan cell is decided by whether the word is there, not by colour —
+    so a shadowed word card (still showing its word) stays unrevealed, and a
+    covered bystander (no word, sepia mid-tone) is caught regardless of how close
+    its tan is to the cream card.
     """
     h, s, v = hsv
     ref_s = max(ref_s, 1.0)
@@ -223,10 +243,9 @@ def classify_relative(
         return "blue", True, 0.85
     if v < max(DARK_VAL_FLOOR, ref_v * DARK_VAL_FACTOR):
         return "assassin", True, 0.85
-    # Bystander: grayer AND dimmer than the word-card baseline (both required).
-    if s < ref_s * GRAY_SAT_FACTOR and v < ref_v * GRAY_VAL_FACTOR:
-        return "bystander", True, 0.80
-    return None, False, 0.82
+    if ink >= TEXT_INK_THRESHOLD:
+        return None, False, 0.85          # word still showing → unrevealed
+    return "bystander", True, 0.80        # tan, no word → covered bystander
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +334,9 @@ def analyze_board(image_base64: str) -> dict:
         thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
     )
 
-    # Pass 1: measure every cell's colour, then derive this frame's word-card baseline.
+    # Pass 1: measure every cell's colour + text-ink, then derive the word-card baseline.
     hsvs: list[tuple[float, float, float]] = []
+    inks: list[float] = []
     for row in range(5):
         for col in range(5):
             x1, y1 = col * cell_w, row * cell_h
@@ -327,9 +347,10 @@ def analyze_board(image_base64: str) -> dict:
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
             hsvs.append(cell_median_hsv(crop))
+            inks.append(cell_text_ink(crop))
     ref_s, ref_v = board_reference(hsvs)
 
-    # Pass 2: classify each cell relative to the baseline, then match OCR words.
+    # Pass 2: classify each cell (colour + word-ink), then match OCR words.
     cards = []
     for row in range(5):
         for col in range(5):
@@ -338,7 +359,8 @@ def analyze_board(image_base64: str) -> dict:
             x2, y2 = x1 + cell_w, y1 + cell_h
 
             hsv = hsvs[pos]
-            team, revealed, color_conf = classify_relative(hsv, ref_s, ref_v)
+            ink = inks[pos]
+            team, revealed, color_conf = classify_cell(hsv, ink, ref_s, ref_v)
 
             best_word: Optional[str] = None
             best_ocr_conf = 0.0
@@ -367,7 +389,7 @@ def analyze_board(image_base64: str) -> dict:
                 "confidence": round(card_conf, 3),
                 "bbox": bbox,
                 "corners": corners,
-                "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1)},
+                "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "ink": round(ink, 3)},
             })
 
     detected = sum(1 for c in cards if c["word"])
@@ -413,8 +435,9 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
 
     cell_h, cell_w = warp_h / 5, warp_w / 5
 
-    # Pass 1: measure every cell's colour, then derive this frame's word-card baseline.
+    # Pass 1: measure every cell's colour + text-ink, then derive the word-card baseline.
     hsvs: list[tuple[float, float, float]] = []
+    inks: list[float] = []
     for row in range(5):
         for col in range(5):
             x1, y1 = col * cell_w, row * cell_h
@@ -425,17 +448,18 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
             hsvs.append(cell_median_hsv(crop))
+            inks.append(cell_text_ink(crop))
     ref_s, ref_v = board_reference(hsvs)
 
-    # Pass 2: reveal + team come purely from colour, judged *relative* to this
-    # frame's word-card baseline (lighting-invariant). No OCR — weak OCR was
-    # marking unrevealed cards revealed (inflated count) and flipping revealed
-    # tiles back to unrevealed frame-to-frame (the red/blue flicker).
+    # Pass 2: colour resolves red/blue/assassin; the printed word ("ink") resolves
+    # the tan cells — word visible → unrevealed, word covered → bystander. No OCR
+    # text-reading (that was unreliable); just whether dark ink is present.
     cards = []
     for pos in range(25):
         row, col = divmod(pos, 5)
         hsv = hsvs[pos]
-        team, revealed, color_conf = classify_relative(hsv, ref_s, ref_v)
+        ink = inks[pos]
+        team, revealed, color_conf = classify_cell(hsv, ink, ref_s, ref_v)
         bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
         cards.append({
             "position": pos,
@@ -445,7 +469,7 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
             "confidence": round(color_conf, 3),
             "bbox": bbox,
             "corners": corners,
-            "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1)},
+            "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1), "ink": round(ink, 3)},
         })
 
     overall_conf = sum(c["confidence"] for c in cards) / 25

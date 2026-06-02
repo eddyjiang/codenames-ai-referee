@@ -177,7 +177,8 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
               )}
               {showDebug && card.debug && (
                 <span style={{ fontSize: "clamp(4px, 0.9vw, 8px)", color: "#8ff0d0", opacity: 0.95, fontFamily: "monospace" }}>
-                  {card.debug.h}·{card.debug.s}·{card.debug.v}
+                  s{card.debug.s} v{card.debug.v}
+                  {card.debug.ink != null ? ` i${card.debug.ink}` : ""}
                 </span>
               )}
             </div>
