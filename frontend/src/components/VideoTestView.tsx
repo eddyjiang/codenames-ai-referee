@@ -159,6 +159,7 @@ export function VideoTestView({ sessionId }: Props) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [dragOver, setDragOver] = useState(false);
+  const [showHsv, setShowHsv] = useState(false);
 
   // Mirror live-adjustable settings into refs so the async capture loop reads
   // current values rather than the values captured when the loop started.
@@ -398,7 +399,7 @@ export function VideoTestView({ sessionId }: Props) {
               />
               <canvas ref={canvasRef} className="hidden" />
 
-              {videoUrl && <BoardOverlay board={board} lowConfidence={lowConfidence} overlay />}
+              {videoUrl && <BoardOverlay board={board} lowConfidence={lowConfidence} overlay showDebug={showHsv} />}
 
               {busy && (
                 <div className="absolute top-3 right-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1">
@@ -534,7 +535,20 @@ export function VideoTestView({ sessionId }: Props) {
 
             {/* Diagnostics */}
             <div className="surface rounded-2xl p-4 space-y-3">
-              <p className="font-heading text-[10px] tracking-[0.25em] uppercase text-white/50">Diagnostics</p>
+              <div className="flex items-center justify-between">
+                <p className="font-heading text-[10px] tracking-[0.25em] uppercase text-white/50">Diagnostics</p>
+                <button
+                  onClick={() => setShowHsv((s) => !s)}
+                  className="font-heading text-[9px] tracking-widest uppercase px-2 py-0.5 rounded transition-colors"
+                  style={
+                    showHsv
+                      ? { background: "rgba(143,240,208,0.15)", color: "#8ff0d0", border: "1px solid rgba(143,240,208,0.4)" }
+                      : { color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.15)" }
+                  }
+                >
+                  HSV {showHsv ? "on" : "off"}
+                </button>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <Stat label="Frames" value={String(frameCount)} />
                 <Stat label="Latency" value={diag ? `${diag.latencyMs} ms` : "—"} />

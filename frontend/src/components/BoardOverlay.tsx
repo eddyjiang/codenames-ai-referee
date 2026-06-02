@@ -6,6 +6,7 @@ interface Props {
   overlay?: boolean;
   onRescan?: () => void;
   onCardEdit?: (position: number, word: string) => void;
+  showDebug?: boolean; // overlay each card's measured H·S·V (CV tuning)
 }
 
 const TEAM_CLASS: Record<CardTeam, string> = {
@@ -61,7 +62,7 @@ function WordCard({ card }: { card: CardState }) {
   );
 }
 
-export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEdit }: Props) {
+export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEdit, showDebug }: Props) {
   if (!board) {
     if (overlay) return null;
     return (
@@ -169,9 +170,14 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
               {onCardEdit && (
                 <span style={{ fontSize: "clamp(4px, 0.7vw, 6px)", opacity: 0.5 }}>✎</span>
               )}
-              {dim && (
+              {dim && !showDebug && (
                 <span style={{ fontSize: "clamp(4px, 0.8vw, 7px)", color: style.stroke, opacity: 0.8 }}>
                   {Math.round(card.confidence * 100)}%
+                </span>
+              )}
+              {showDebug && card.debug && (
+                <span style={{ fontSize: "clamp(4px, 0.9vw, 8px)", color: "#8ff0d0", opacity: 0.95, fontFamily: "monospace" }}>
+                  {card.debug.h}·{card.debug.s}·{card.debug.v}
                 </span>
               )}
             </div>

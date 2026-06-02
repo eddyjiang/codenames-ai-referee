@@ -130,41 +130,90 @@ def warp_board(img: np.ndarray, corners: np.ndarray) -> tuple[np.ndarray, np.nda
 # Color classification
 # ---------------------------------------------------------------------------
 
-def classify_color(cell_bgr: np.ndarray) -> tuple[Optional[str], bool, float]:
-    """Return (team | None, revealed, confidence) from the card's dominant color.
+# Hue is the most lighting-stable channel; these bands are wide on purpose.
+# OpenCV hue is 0–179 (red wraps around 0/180, blue sits near 120).
+def _is_redish(h: float) -> bool:
+    return h <= 15 or h >= 165
 
-    Codenames palette (approximate HSV):
-      Unrevealed  — cream/parchment: V > 160, S < 70
-      Red team    — deep red/burgundy: H near 0 or 180, S > 70
-      Blue team   — medium blue: H 100–135, S > 65
-      Bystander   — tan/khaki: H 15–50, S 40–140, V > 90
-      Assassin    — black tile: V < 65
-    """
+
+def _is_blueish(h: float) -> bool:
+    return 90 <= h <= 140
+
+
+# Relative decision factors (multiples of the per-frame word-card baseline, so
+# they travel across lighting instead of being absolute HSV cutoffs). Tune these
+# from the harness HSV readout, not the raw numbers.
+TILE_SAT_FACTOR = 1.35   # red/blue tile is ≳ this × the tan baseline saturation
+GRAY_SAT_FACTOR = 0.60   # bystander is ≲ this × the baseline saturation (grayer)
+DARK_VAL_FACTOR = 0.50   # assassin is darker than this × the baseline value
+DARK_VAL_FLOOR = 70.0    # …and an absolute floor so a dim board can't call everything dark
+
+
+def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
+    """Median (hue, sat, val) over the centre of a cell crop."""
     if cell_bgr.size == 0:
-        return None, False, 0.30
-
+        return (0.0, 0.0, 0.0)
     h, w = cell_bgr.shape[:2]
     my, mx = h // 4, w // 4
     center = cell_bgr[my: h - my, mx: w - mx]
     if center.size == 0:
         center = cell_bgr
-
     hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
-    hue = float(np.median(hsv[:, :, 0]))
-    sat = float(np.median(hsv[:, :, 1]))
-    val = float(np.median(hsv[:, :, 2]))
+    return (
+        float(np.median(hsv[:, :, 0])),
+        float(np.median(hsv[:, :, 1])),
+        float(np.median(hsv[:, :, 2])),
+    )
 
-    if val > 160 and sat < 70:
-        return None, False, 0.88
-    if val < 65:
-        return "assassin", True, 0.90
-    if sat > 70 and (hue <= 12 or hue >= 168):
-        return "red", True, 0.87
-    if 100 <= hue <= 135 and sat > 65:
-        return "blue", True, 0.87
-    if 15 <= hue <= 50 and 40 <= sat <= 140 and val > 90:
-        return "bystander", True, 0.83
-    return None, False, 0.45
+
+def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, float]:
+    """Estimate this frame's unrevealed *word-card* baseline → (ref_sat, ref_val).
+
+    Word cards are the bright, warm, non-red/blue cells and are usually the
+    majority. We bias toward the more-saturated end of that pool because the
+    grayer bystander tiles sit *below* the tan word cards in saturation — so a
+    plain median would be dragged down by them.
+    """
+    bright = [(h, s, v) for (h, s, v) in hsvs if v > 80]
+    warm = [
+        (h, s, v) for (h, s, v) in bright
+        if not (s > 80 and (_is_redish(h) or _is_blueish(h)))
+    ]
+    pool = warm or bright or list(hsvs)
+    if not pool:
+        return 60.0, 180.0
+    sats = sorted(s for (_, s, _) in pool)
+    vals = sorted(v for (_, _, v) in pool)
+    ref_s = sats[min(len(sats) - 1, int(len(sats) * 0.65))]
+    ref_v = vals[len(vals) // 2]
+    return ref_s, ref_v
+
+
+def classify_relative(
+    hsv: tuple[float, float, float], ref_s: float, ref_v: float
+) -> tuple[Optional[str], bool, float]:
+    """Classify one cell *relative* to the frame's word-card baseline.
+
+    Lighting-invariant — every test is a ratio against ref_s/ref_v measured from
+    the unrevealed cards in the same frame:
+      Red / Blue — their (lighting-stable) hue, clearly more saturated than tan.
+      Assassin   — much darker than the word cards.
+      Bystander  — grayer (notably *less* saturated) than the tan word cards.
+      Unrevealed — looks like the tan baseline.
+    Red/blue are checked before assassin so a dark-but-saturated tile isn't
+    mistaken for the assassin.
+    """
+    h, s, v = hsv
+    ref_s = max(ref_s, 1.0)
+    if s > ref_s * TILE_SAT_FACTOR and _is_redish(h):
+        return "red", True, 0.85
+    if s > ref_s * TILE_SAT_FACTOR and _is_blueish(h):
+        return "blue", True, 0.85
+    if v < max(DARK_VAL_FLOOR, ref_v * DARK_VAL_FACTOR):
+        return "assassin", True, 0.85
+    if s < ref_s * GRAY_SAT_FACTOR:
+        return "bystander", True, 0.80
+    return None, False, 0.82
 
 
 # ---------------------------------------------------------------------------
@@ -253,18 +302,30 @@ def analyze_board(image_base64: str) -> dict:
         thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
     )
 
-    cards = []
+    # Pass 1: measure every cell's colour, then derive this frame's word-card baseline.
+    hsvs: list[tuple[float, float, float]] = []
     for row in range(5):
         for col in range(5):
             x1, y1 = col * cell_w, row * cell_h
             x2, y2 = x1 + cell_w, y1 + cell_h
-
             margin = 0.12
             crop = work[
                 int(y1 + cell_h * margin): int(y2 - cell_h * margin),
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
-            team, revealed, color_conf = classify_color(crop)
+            hsvs.append(cell_median_hsv(crop))
+    ref_s, ref_v = board_reference(hsvs)
+
+    # Pass 2: classify each cell relative to the baseline, then match OCR words.
+    cards = []
+    for row in range(5):
+        for col in range(5):
+            pos = row * 5 + col
+            x1, y1 = col * cell_w, row * cell_h
+            x2, y2 = x1 + cell_w, y1 + cell_h
+
+            hsv = hsvs[pos]
+            team, revealed, color_conf = classify_relative(hsv, ref_s, ref_v)
 
             best_word: Optional[str] = None
             best_ocr_conf = 0.0
@@ -286,13 +347,14 @@ def analyze_board(image_base64: str) -> dict:
             card_conf = (color_conf + best_ocr_conf) / 2 if best_word else color_conf * 0.6
 
             cards.append({
-                "position": row * 5 + col,
+                "position": pos,
                 "word": best_word,
                 "revealed": revealed,
                 "team": team,
                 "confidence": round(card_conf, 3),
                 "bbox": bbox,
                 "corners": corners,
+                "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1)},
             })
 
     detected = sum(1 for c in cards if c["word"])
@@ -310,7 +372,7 @@ def analyze_board(image_base64: str) -> dict:
             "overall_confidence": round(overall_conf, 3),
             "issues": issues,
             "partial_visibility": detected < 25,
-            "notes": f"cv:full {'warped' if using_warp else 'fullframe'} detected:{detected}/25",
+            "notes": f"cv:full {'warped' if using_warp else 'fullframe'} detected:{detected}/25 ref_s:{ref_s:.0f} ref_v:{ref_v:.0f}",
         },
         "captured_at": int(time.time() * 1000),
     }
@@ -338,61 +400,40 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
 
     cell_h, cell_w = warp_h / 5, warp_w / 5
 
-    # Run OCR once on the full warped board — used to detect text presence per cell
-    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    ocr_data: dict[str, Any] = pytesseract.image_to_data(
-        thresh, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
-    )
-
-    cards = []
+    # Pass 1: measure every cell's colour, then derive this frame's word-card baseline.
+    hsvs: list[tuple[float, float, float]] = []
     for row in range(5):
         for col in range(5):
-            pos = row * 5 + col
             x1, y1 = col * cell_w, row * cell_h
             x2, y2 = x1 + cell_w, y1 + cell_h
-
             margin = 0.12
             crop = work[
                 int(y1 + cell_h * margin): int(y2 - cell_h * margin),
                 int(x1 + cell_w * margin): int(x2 - cell_w * margin),
             ]
+            hsvs.append(cell_median_hsv(crop))
+    ref_s, ref_v = board_reference(hsvs)
 
-            # Text presence: any OCR hit with conf ≥ 30 inside this cell means word is still visible
-            has_text = False
-            for i, text in enumerate(ocr_data["text"]):
-                if not text.strip():
-                    continue
-                conf = int(ocr_data["conf"][i])
-                if conf < 30:
-                    continue
-                cx = ocr_data["left"][i] + ocr_data["width"][i] / 2
-                cy = ocr_data["top"][i] + ocr_data["height"][i] / 2
-                if x1 <= cx < x2 and y1 <= cy < y2:
-                    has_text = True
-                    break
-
-            # If text is visible → unrevealed; if hidden by tile → use color for team
-            if has_text:
-                team, revealed, color_conf = None, False, 0.88
-            else:
-                team, revealed, color_conf = classify_color(crop)
-                # Ensure revealed is true when covered (text gone means tile is present)
-                if not revealed:
-                    revealed = True
-                    color_conf = max(color_conf, 0.70)
-
-            bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
-
-            cards.append({
-                "position": pos,
-                "word": known_words[pos] if pos < len(known_words) else None,
-                "revealed": revealed,
-                "team": team,
-                "confidence": round(color_conf, 3),
-                "bbox": bbox,
-                "corners": corners,
-            })
+    # Pass 2: reveal + team come purely from colour, judged *relative* to this
+    # frame's word-card baseline (lighting-invariant). No OCR — weak OCR was
+    # marking unrevealed cards revealed (inflated count) and flipping revealed
+    # tiles back to unrevealed frame-to-frame (the red/blue flicker).
+    cards = []
+    for pos in range(25):
+        row, col = divmod(pos, 5)
+        hsv = hsvs[pos]
+        team, revealed, color_conf = classify_relative(hsv, ref_s, ref_v)
+        bbox, corners = _cell_geometry(row, col, cell_h, cell_w, orig_h, orig_w, M_inv, using_warp)
+        cards.append({
+            "position": pos,
+            "word": known_words[pos] if pos < len(known_words) else None,
+            "revealed": revealed,
+            "team": team,
+            "confidence": round(color_conf, 3),
+            "bbox": bbox,
+            "corners": corners,
+            "debug": {"h": round(hsv[0], 1), "s": round(hsv[1], 1), "v": round(hsv[2], 1)},
+        })
 
     overall_conf = sum(c["confidence"] for c in cards) / 25
     issues: list[str] = []
@@ -406,7 +447,7 @@ def track_board(image_base64: str, known_words: list[Optional[str]]) -> dict:
             "overall_confidence": round(overall_conf, 3),
             "issues": issues,
             "partial_visibility": False,
-            "notes": f"cv:track {'warped' if using_warp else 'fullframe'}",
+            "notes": f"cv:track {'warped' if using_warp else 'fullframe'} ref_s:{ref_s:.0f} ref_v:{ref_v:.0f}",
         },
         "captured_at": int(time.time() * 1000),
     }

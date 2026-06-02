@@ -29,6 +29,8 @@ export interface CardState {
   confidence: number;
   bbox?: BBox | null;
   corners?: CardCorners | null;
+  // Per-cell median HSV from the CV color classifier (test-harness tuning aid).
+  debug?: { h: number; s: number; v: number } | null;
 }
 
 export interface BoardState {
