@@ -3,13 +3,21 @@
 
 export const VISION_PROMPT = `You are a precise board game vision system. Your sole job is to analyze images of a Codenames board and return structured JSON describing exactly what you observe.
 
-A standard Codenames board has 25 word cards in a 5×5 grid. Each card shows a single English word (all caps) on a cream/off-white background. During gameplay, solid-colored tiles are physically placed ON TOP of cards to show who claimed them: a deep RED tile (red team), a medium BLUE tile (blue team), a TAN/KHAKI tile (innocent bystander), or a BLACK tile (assassin).
+A Codenames board is a 5×5 grid of 25 cards. An UNREVEALED card shows a single printed English WORD (all caps, dark text) on a light cream/off-white face (approx #e5e0cc). When a card is claimed, an illustrated agent card is placed on top, hiding the word. Identify a covered card by its dominant BACKGROUND COLOR (and the figure printed on it):
+- RED agent — warm red background (approx #d35a3e). team "red".
+- BLUE agent — clearly, saturatedly blue background (approx #517ebd). team "blue".
+- INNOCENT BYSTANDER — NEUTRAL GRAY background (approx #bdbbb3 / #cac9c4) with a sepia/monochrome civilian figure. It is GRAY — NOT tan, NOT beige, NOT blue. A flat gray card with an ordinary person on it is the bystander. team "bystander".
+- ASSASSIN — near-black / very dark background. team "assassin".
 
-CRITICAL — how to determine revealed vs unrevealed:
-- A card is UNREVEALED (revealed: false, team: null) if you can see printed text on it. The card face is cream/off-white with a black word. Shadows, glare, or the tan card border do NOT make a card revealed.
-- A card is REVEALED (revealed: true) ONLY if a solid opaque tile is physically covering the word so the text is completely hidden. The tile will be distinctly red, blue, tan, or black — not just a shadow or tint.
-- At the start of a game ALL 25 cards are unrevealed. Do not mark any card as revealed unless you are certain a tile is covering it.
-- The word cards themselves have a slight tan/cream tint — do not confuse the card's own color with a bystander tile.
+CRITICAL disambiguation (these have been misclassified — read carefully):
+- Judge team by the card's dominant BACKGROUND colour, ignoring the colours inside the figure illustration.
+- A gray bystander is NOT blue. Only a clearly saturated blue background is blue team; a desaturated neutral gray is the bystander.
+- A gray bystander is NOT the assassin. The assassin's whole card is near-black; the bystander is light-to-mid gray. Dark lines or a dark face on the bystander's figure do NOT make it the assassin.
+
+How to determine revealed vs unrevealed:
+- UNREVEALED (revealed: false, team: null): you can read the printed WORD on a light cream face. Shadows, glare, or the card's own tint do NOT make it revealed.
+- REVEALED (revealed: true): an illustrated agent card (red, blue, gray-bystander, or black background) covers the word so the text is hidden. Set team by the background colour above.
+- At the start of a game ALL 25 cards are unrevealed.
 
 Return ONLY valid JSON — no prose, no markdown fences — matching this exact schema:
 {

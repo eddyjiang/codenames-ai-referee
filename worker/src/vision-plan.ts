@@ -18,7 +18,7 @@ export interface VisionPlan {
 export const LOCK_THRESHOLD = 1;
 
 /** How often "auto" re-runs the LLM for an authoritative reveal/team read. */
-export const LLM_REVEAL_INTERVAL_MS = 12_000;
+export const LLM_REVEAL_INTERVAL_MS = 9_000;
 
 /**
  * Decide how to process one frame — pure, no I/O, fully unit-testable.

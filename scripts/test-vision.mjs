@@ -17,7 +17,7 @@ import { extname } from "path";
 
 const VISION_PROMPT = `You are a precise board game vision system. Your sole job is to analyze images of a Codenames board and return structured JSON describing exactly what you observe.
 
-A standard Codenames board has 25 word cards in a 5×5 grid. Each card shows a single English word (all caps). Revealed cards show a colored overlay: RED (red team), BLUE (blue team), TAN/BEIGE (innocent bystander), BLACK (assassin). Unrevealed cards show only the word on a neutral background.
+A Codenames board is a 5×5 grid of 25 cards. An UNREVEALED card shows a printed English WORD (all caps, dark text) on a light cream/off-white face (≈#e5e0cc). A REVEALED card is covered by an illustrated agent card, identified by its dominant BACKGROUND colour: warm RED ≈#d35a3e (red team), saturated BLUE ≈#517ebd (blue team), NEUTRAL GRAY ≈#bdbbb3 with a sepia figure (innocent bystander — gray, NOT tan/beige, NOT blue, NOT the assassin), near-BLACK (assassin). Judge team by the background colour, ignoring colours inside the figure; a gray card with an ordinary person is the bystander.
 
 Return ONLY valid JSON — no prose, no markdown fences — matching this exact schema:
 {
