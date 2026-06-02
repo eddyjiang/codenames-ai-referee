@@ -130,23 +130,31 @@ def warp_board(img: np.ndarray, corners: np.ndarray) -> tuple[np.ndarray, np.nda
 # Color classification
 # ---------------------------------------------------------------------------
 
-# Hue is the most lighting-stable channel; these bands are wide on purpose.
-# OpenCV hue is 0–179 (red wraps around 0/180, blue sits near 120).
+# Hue is the most lighting-stable channel. Measured card hues (OpenCV 0–179):
+# red ≈ 6, blue ≈ 107. The cream word card and the near-gray bystander both read
+# hue ≈ 24 but at very low saturation, so their hue is noisy and deliberately
+# unused — they're separated by saturation + value instead.
 def _is_redish(h: float) -> bool:
-    return h <= 15 or h >= 165
+    return h <= 12 or h >= 168
 
 
 def _is_blueish(h: float) -> bool:
-    return 90 <= h <= 140
+    return 95 <= h <= 140
 
 
-# Relative decision factors (multiples of the per-frame word-card baseline, so
-# they travel across lighting instead of being absolute HSV cutoffs). Tune these
-# from the harness HSV readout, not the raw numbers.
-TILE_SAT_FACTOR = 1.35   # red/blue tile is ≳ this × the tan baseline saturation
-GRAY_SAT_FACTOR = 0.60   # bystander is ≲ this × the baseline saturation (grayer)
-DARK_VAL_FACTOR = 0.50   # assassin is darker than this × the baseline value
-DARK_VAL_FLOOR = 70.0    # …and an absolute floor so a dim board can't call everything dark
+# Measured saturations: red ≈ 180, blue ≈ 146, word ≈ 28, bystander ≈ 13 — a ~6×
+# gap between coloured tiles and tan cards, so an absolute saturation floor
+# cleanly separates "tile" from "tan" (robust across lighting), while relative
+# factors handle the close tan-vs-bystander call.
+TILE_SAT_FLOOR = 55.0     # a coloured (red/blue) tile clears this; tan never does
+TILE_SAT_FACTOR = 1.6     # …and is well above the per-frame word-card baseline
+# Bystander (#bdbbb3) vs word card (#e5e0cc): S ≈ 0.48× and V ≈ 0.83× the word
+# card — grayer AND dimmer. Requiring *both* avoids false bystanders from a word
+# card that merely glares desaturated (low S, still bright) or sits in shadow.
+GRAY_SAT_FACTOR = 0.70    # bystander saturation ≲ this × baseline
+GRAY_VAL_FACTOR = 0.90    # …AND value ≲ this × baseline
+DARK_VAL_FACTOR = 0.45    # assassin value < this × baseline
+DARK_VAL_FLOOR = 75.0     # …with an absolute floor for a dim board
 
 
 def cell_median_hsv(cell_bgr: np.ndarray) -> tuple[float, float, float]:
@@ -177,16 +185,17 @@ def board_reference(hsvs: list[tuple[float, float, float]]) -> tuple[float, floa
     bright = [(h, s, v) for (h, s, v) in hsvs if v > 80]
     warm = [
         (h, s, v) for (h, s, v) in bright
-        if not (s > 80 and (_is_redish(h) or _is_blueish(h)))
+        if not (s > 60 and (_is_redish(h) or _is_blueish(h)))
     ]
     pool = warm or bright or list(hsvs)
     if not pool:
-        return 60.0, 180.0
+        return 30.0, 205.0
     sats = sorted(s for (_, s, _) in pool)
     vals = sorted(v for (_, _, v) in pool)
-    ref_s = sats[min(len(sats) - 1, int(len(sats) * 0.65))]
-    ref_v = vals[len(vals) // 2]
-    return ref_s, ref_v
+    # 65th percentile of each biases toward the brighter, slightly-more-saturated
+    # word cards (above the grayer, dimmer bystanders) → a word-card baseline.
+    i = min(len(pool) - 1, int(len(pool) * 0.65))
+    return sats[i], vals[i]
 
 
 def classify_relative(
@@ -194,24 +203,28 @@ def classify_relative(
 ) -> tuple[Optional[str], bool, float]:
     """Classify one cell *relative* to the frame's word-card baseline.
 
-    Lighting-invariant — every test is a ratio against ref_s/ref_v measured from
-    the unrevealed cards in the same frame:
-      Red / Blue — their (lighting-stable) hue, clearly more saturated than tan.
+    Lighting-invariant — tests combine an absolute saturation floor (the ~6× gap
+    between coloured tiles and tan is huge and stable) with ratios against the
+    per-frame word-card baseline:
+      Red / Blue — their (lighting-stable) hue + saturation clearing the tile floor.
       Assassin   — much darker than the word cards.
-      Bystander  — grayer (notably *less* saturated) than the tan word cards.
+      Bystander  — grayer AND dimmer than the word cards (both required).
       Unrevealed — looks like the tan baseline.
     Red/blue are checked before assassin so a dark-but-saturated tile isn't
     mistaken for the assassin.
     """
     h, s, v = hsv
     ref_s = max(ref_s, 1.0)
-    if s > ref_s * TILE_SAT_FACTOR and _is_redish(h):
+    ref_v = max(ref_v, 1.0)
+    sat_tile = max(TILE_SAT_FLOOR, ref_s * TILE_SAT_FACTOR)
+    if s >= sat_tile and _is_redish(h):
         return "red", True, 0.85
-    if s > ref_s * TILE_SAT_FACTOR and _is_blueish(h):
+    if s >= sat_tile and _is_blueish(h):
         return "blue", True, 0.85
     if v < max(DARK_VAL_FLOOR, ref_v * DARK_VAL_FACTOR):
         return "assassin", True, 0.85
-    if s < ref_s * GRAY_SAT_FACTOR:
+    # Bystander: grayer AND dimmer than the word-card baseline (both required).
+    if s < ref_s * GRAY_SAT_FACTOR and v < ref_v * GRAY_VAL_FACTOR:
         return "bystander", True, 0.80
     return None, False, 0.82
 
