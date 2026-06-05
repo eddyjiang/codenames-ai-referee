@@ -21,22 +21,19 @@ export const LOCK_THRESHOLD = 1;
 export const LLM_REVEAL_INTERVAL_MS = 9_000;
 
 /**
- * Decide how to process one frame — pure, no I/O, fully unit-testable.
+ * Decide the SYNCHRONOUS backend for one frame — pure, no I/O, unit-testable.
  *
  * - "cv": every frame to the CV service (full until locked, then track). No LLM.
- * - "auto" (production): the LLM reads words on the first scan, then the CV
- *   service tracks colour/perspective fast on most frames — but every
- *   `llmIntervalMs` the LLM does an authoritative reveal/team read, because CV
- *   alone can't tell a bystander tile from an unrevealed word card. CV frames
- *   carry the LLM's last verdict forward (see the merge in analyzeFrame).
+ * - "auto" (production): the LLM reads words on the first scan, then fast CV track
+ *   on every locked frame (perspective + red/blue/assassin). The authoritative
+ *   LLM reveal read (which catches bystanders) is NOT chosen here — it runs in the
+ *   BACKGROUND from the /frame handler, so the sync path never blocks on the LLM.
+ *   Only when there's no CV service does the sync path fall back to LLM per frame.
  */
 export function selectVisionPlan(
   engine: VisionEngine,
   existingBoard: BoardState | undefined,
-  caps: { cv: boolean; llm: boolean },
-  now = 0,
-  lastLlmAt = 0,
-  llmIntervalMs: number = LLM_REVEAL_INTERVAL_MS
+  caps: { cv: boolean; llm: boolean }
 ): VisionPlan {
   const lockedWords = existingBoard?.board.map((c) => c.word ?? null) ?? null;
   const useTrack = (lockedWords?.filter(Boolean).length ?? 0) >= LOCK_THRESHOLD;
@@ -54,15 +51,9 @@ export function selectVisionPlan(
   if (!useTrack) {
     return { backend: "llm", mode: "full", knownWords: null, reason: "first-scan" };
   }
-  // Locked: periodic LLM reveal read (authoritative teams incl. bystander), else
-  // fast CV track. Also use the LLM if it's due, or if there's no CV service.
-  const dueForLlm = now - lastLlmAt >= llmIntervalMs;
-  if (caps.llm && (dueForLlm || !caps.cv)) {
-    return { backend: "llm", mode: "full", knownWords: lockedWords, reason: "llm-reveal" };
-  }
   if (caps.cv) {
     return { backend: "cv", mode: "track", knownWords: lockedWords, reason: "cv-track" };
   }
-  // No CV and no LLM is a misconfiguration; analyzeFrame will surface it.
+  // No CV service: fall back to a (blocking) LLM read every locked frame.
   return { backend: "llm", mode: "full", knownWords: lockedWords, reason: "llm-reveal" };
 }

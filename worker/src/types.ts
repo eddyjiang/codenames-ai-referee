@@ -31,6 +31,8 @@ export interface CardState {
   corners?: CardCorners | null;
   // Per-cell median HSV + text contrast-depth ratio from the CV classifier (passes through).
   debug?: { h: number; s: number; v: number; dr?: number } | null;
+  // User-pinned team/revealed: when true, CV and LLM never change this cell.
+  manual?: boolean;
 }
 
 export interface BoardScore {
@@ -74,9 +76,12 @@ export interface SessionState {
   game_id: string | null;
   current_team: Team;
   guesses_this_turn: number;
+  /** Positions revealed during the current clue — guesses are board-driven. */
+  turn_reveals?: number[];
+  /** Referee announcement from the background reveal read, spoken on the next frame. */
+  pending_message?: string | null;
   clue_number: number | null;
   clue_word: string | null;
-  clues_given: string[]; // track for repeat-clue rule
   board: BoardState | null;
   house_rules: HouseRules;
 }
@@ -97,7 +102,5 @@ export interface Env {
   // Tier 2 fallback: LLM vision via OpenRouter or Anthropic SDK
   OPENROUTER_API_KEY: string;
   ANTHROPIC_API_KEY: string;
-  // Voice: optional — degrades gracefully without it
-  OPENAI_API_KEY: string;
   ENVIRONMENT: string;
 }

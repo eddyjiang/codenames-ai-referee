@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
-import { analyzeFrame, storeBoardState, getBoardState, clearBoardState } from "./vision";
-import { validateClue, checkGuessLimit } from "./rules";
+import { analyzeFrame, runBackgroundReveal, storeBoardState, getBoardState, clearBoardState } from "./vision";
+import { LLM_REVEAL_INTERVAL_MS } from "./vision-plan";
+import { validateClue } from "./rules";
+import { trackReveals } from "./guess-tracking";
 import {
   getSession,
   saveSession,
@@ -13,7 +15,8 @@ import {
   getGameHistory,
   defaultSession,
 } from "./session";
-import { transcribeAudio, parseClueFromTranscript, synthesizeSpeech } from "./voice";
+import { parseClue } from "./voice";
+import { buildDemoBoard } from "./demo-board";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -58,9 +61,9 @@ app.post("/api/session/:id/game/start", async (c) => {
   session.game_id = gameId;
   session.current_team = "red";
   session.guesses_this_turn = 0;
+  session.turn_reveals = [];
   session.clue_number = null;
   session.clue_word = null;
-  session.clues_given = [];
   await saveSession(session, c.env.BOARD_KV);
 
   return c.json({ game_id: gameId });
@@ -98,17 +101,62 @@ app.post("/api/session/:id/frame", async (c) => {
     return c.json({ error: String(err) }, 500);
   }
 
+  // Schedule a NON-BLOCKING LLM reveal read (catches bystanders) when due, so the
+  // fast CV result returns now and the LLM verdict lands in KV for the next frame.
+  const now = Date.now();
+  const hasLlm = !!(c.env.OPENROUTER_API_KEY || c.env.ANTHROPIC_API_KEY);
+  const locked = boardState.board.some((card) => !!card.word);
+  const dueForReveal =
+    engine === "auto" &&
+    hasLlm &&
+    !!c.env.CV_SERVICE_URL &&
+    locked &&
+    now - (boardState.llm_at ?? 0) >= LLM_REVEAL_INTERVAL_MS;
+  if (dueForReveal) {
+    boardState.llm_at = now; // mark kicked-off so we don't double-trigger within the interval
+  }
+
   await storeBoardState(sessionId, boardState, c.env.BOARD_KV);
 
-  // Update session board reference
+  // Board-driven guess tracking: cards newly revealed while a clue is active
+  // are guesses. Also surface any announcement parked by the background
+  // reveal read (bystander verdicts land there, between frames).
   const session = await getSession(sessionId, c.env.BOARD_KV);
+  const game = trackReveals(session, existingBoard, boardState);
+  if (game && !game.message && session.pending_message) {
+    game.message = session.pending_message;
+  }
+  session.pending_message = null;
   session.board = boardState;
   await saveSession(session, c.env.BOARD_KV);
+
+  if (dueForReveal) {
+    const lockedWords = boardState.board.map((card) => card.word ?? null);
+    c.executionCtx.waitUntil(
+      runBackgroundReveal(body.image, mediaType, c.env, sessionId, lockedWords)
+    );
+  }
 
   return c.json({
     board: boardState,
     low_confidence: boardState.metadata.overall_confidence < 0.7,
+    game,
   });
+});
+
+// ---------- Demo board (no camera, no vision-API spend) ----------
+
+app.post("/api/session/:id/board/demo", async (c) => {
+  const sessionId = c.req.param("id");
+  const boardState = buildDemoBoard();
+
+  await storeBoardState(sessionId, boardState, c.env.BOARD_KV);
+
+  const session = await getSession(sessionId, c.env.BOARD_KV);
+  session.board = boardState;
+  await saveSession(session, c.env.BOARD_KV);
+
+  return c.json({ board: boardState, low_confidence: false });
 });
 
 // ---------- Board reset (force rescan) ----------
@@ -126,12 +174,49 @@ app.delete("/api/session/:id/board", async (c) => {
 
 app.patch("/api/session/:id/board/card", async (c) => {
   const sessionId = c.req.param("id");
-  const { position, word } = await c.req.json<{ position: number; word: string }>();
+  const { position, word, team } = await c.req.json<{
+    position: number;
+    word?: string;
+    // "auto" hands the cell back to CV/LLM; the rest pin it against CV/LLM.
+    team?: "red" | "blue" | "bystander" | "assassin" | "unrevealed" | "auto";
+  }>();
   const board = await getBoardState(sessionId, c.env.BOARD_KV);
   if (!board) return c.json({ error: "No board state" }, 404);
-  board.board[position].word = word.toUpperCase().trim() || null;
+  const cell = board.board[position];
+  if (!cell) return c.json({ error: "Invalid position" }, 400);
+
+  const wasRevealed = cell.revealed;
+
+  if (word !== undefined) cell.word = word.toUpperCase().trim() || null;
+  if (team !== undefined) {
+    if (team === "auto") {
+      cell.manual = false; // resume CV/LLM control
+    } else if (team === "unrevealed") {
+      cell.team = null;
+      cell.revealed = false;
+      cell.manual = true;
+    } else {
+      cell.team = team; // red | blue | bystander | assassin
+      cell.revealed = true;
+      cell.manual = true;
+    }
+  }
+
   await storeBoardState(sessionId, board, c.env.BOARD_KV);
-  return c.json({ board });
+
+  // A manual reveal/un-reveal is a board mutation like any other — it counts
+  // toward (or corrects) the current turn's guesses.
+  let game = null;
+  if (cell.revealed !== wasRevealed) {
+    const session = await getSession(sessionId, c.env.BOARD_KV);
+    const prev = structuredClone(board);
+    prev.board[position].revealed = wasRevealed;
+    game = trackReveals(session, prev, board);
+    session.board = board;
+    await saveSession(session, c.env.BOARD_KV);
+  }
+
+  return c.json({ board, game });
 });
 
 // ---------- Clue validation (text) ----------
@@ -155,7 +240,6 @@ app.post("/api/session/:id/clue", async (c) => {
     body.word,
     body.number,
     board,
-    session.clues_given,
     session.house_rules
   );
 
@@ -185,43 +269,45 @@ app.post("/api/session/:id/clue", async (c) => {
   }
 
   // Update session state for valid clues
-  if (result.valid) {
+  // The clue stands unless confidently illegal ("stop") — the guessers already
+  // heard it, so nudge/log-level clues remain the active clue and play continues.
+  if (result.intervention_level !== "stop") {
     session.clue_word = body.word;
     session.clue_number = body.number;
     session.guesses_this_turn = 0;
-    session.clues_given.push(body.word);
+    session.turn_reveals = [];
     await saveSession(session, c.env.BOARD_KV);
   }
 
   return c.json(result);
 });
 
-// ---------- Voice: Whisper transcription + clue validation ----------
+// ---------- Voice: browser-STT transcript → LLM parse + clue validation ----------
 
-app.post("/api/session/:id/clue/audio", async (c) => {
+app.post("/api/session/:id/clue/transcript", async (c) => {
   const sessionId = c.req.param("id");
-  const formData = await c.req.formData();
-  const audioFile = formData.get("audio") as File | null;
+  const body = await c.req.json<{ transcript: string }>();
 
-  if (!audioFile) {
-    return c.json({ error: "Missing audio file" }, 400);
+  if (!body.transcript) {
+    return c.json({ error: "Missing transcript" }, 400);
   }
 
-  const audioBuffer = await audioFile.arrayBuffer();
-
-  let transcript: string;
-  try {
-    transcript = await transcribeAudio(audioBuffer, audioFile.name || "clue.webm", c.env.OPENAI_API_KEY);
-  } catch (err) {
-    return c.json({ error: `Transcription failed: ${String(err)}` }, 500);
-  }
-
-  const parsed = parseClueFromTranscript(transcript);
+  const parsed = await parseClue(body.transcript, c.env.OPENROUTER_API_KEY);
   if (!parsed) {
+    // 200 with a null clue: "no clue heard" is a normal outcome, not an error.
+    return c.json({ transcript: body.transcript, clue: null, rules: null });
+  }
+
+  // Heard a clue word but no number, and nothing else suspicious — incomplete.
+  // Return the partial clue (number: null) so the client can hold the utterance
+  // and combine it with the number when it arrives after a pause. (When extra
+  // speech is present we proceed anyway: the utterance gets judged regardless.)
+  if (parsed.number === null && !parsed.extra) {
     return c.json({
-      transcript,
-      error: "Could not parse a clue word and number from the audio. Please try again.",
-    }, 422);
+      transcript: body.transcript,
+      clue: { word: parsed.word, number: null },
+      rules: null,
+    });
   }
 
   // Now validate exactly like the text endpoint
@@ -234,22 +320,13 @@ app.post("/api/session/:id/clue/audio", async (c) => {
 
   const result = validateClue(
     parsed.word,
-    parsed.number,
+    parsed.number ?? 1, // number only feeds the zero-clue check; moot here — extra speech forfeits the turn
     board,
-    session.clues_given,
-    session.house_rules
+    session.house_rules,
+    parsed.extra
   );
 
-  // Build TTS audio if intervention needs to be spoken
-  let ttsBase64: string | null = null;
-  if (result.message) {
-    try {
-      const audioData = await synthesizeSpeech(result.message, c.env.OPENAI_API_KEY);
-      ttsBase64 = btoa(String.fromCharCode(...new Uint8Array(audioData)));
-    } catch {
-      // TTS failure is non-fatal; client falls back to text display
-    }
-  }
+  // No TTS here — the live-browser path speaks via free client-side speechSynthesis.
 
   // Persist
   if (session.game_id) {
@@ -257,8 +334,8 @@ app.post("/api/session/:id/clue/audio", async (c) => {
       session.game_id,
       session.current_team,
       parsed.word,
-      parsed.number,
-      transcript,
+      parsed.number ?? 0,
+      body.transcript,
       c.env
     );
     if (result.intervention_level !== "none") {
@@ -274,65 +351,20 @@ app.post("/api/session/:id/clue/audio", async (c) => {
     }
   }
 
-  if (result.valid) {
+  // Same as /clue: anything short of a "stop" verdict stands as the active clue.
+  // (A null number can't reach here without a stop — see the incomplete gate above.)
+  if (result.intervention_level !== "stop" && parsed.number !== null) {
     session.clue_word = parsed.word;
     session.clue_number = parsed.number;
     session.guesses_this_turn = 0;
-    session.clues_given.push(parsed.word);
+    session.turn_reveals = [];
     await saveSession(session, c.env.BOARD_KV);
   }
 
   return c.json({
-    transcript,
-    clue: parsed,
+    transcript: body.transcript,
+    clue: { word: parsed.word, number: parsed.number },
     rules: result,
-    tts_audio_base64: ttsBase64,
-  });
-});
-
-// ---------- Guess tracking ----------
-
-app.post("/api/session/:id/guess", async (c) => {
-  const sessionId = c.req.param("id");
-  const session = await getSession(sessionId, c.env.BOARD_KV);
-
-  if (session.clue_number === null) {
-    return c.json({ error: "No active clue" }, 400);
-  }
-
-  session.guesses_this_turn++;
-
-  const limitViolation = checkGuessLimit(
-    session.guesses_this_turn,
-    session.clue_number
-  );
-
-  await saveSession(session, c.env.BOARD_KV);
-
-  let ttsBase64: string | null = null;
-  if (limitViolation && session.game_id) {
-    const message = `That's guess number ${session.guesses_this_turn}. The clue was ${session.clue_number}, so the maximum is ${session.clue_number + 1}. The turn ends here.`;
-    try {
-      const audioData = await synthesizeSpeech(message, c.env.OPENAI_API_KEY);
-      ttsBase64 = btoa(String.fromCharCode(...new Uint8Array(audioData)));
-    } catch { /* non-fatal */ }
-
-    await logIntervention(
-      session.game_id,
-      null,
-      "stop",
-      "guess_limit_exceeded",
-      message,
-      1.0,
-      c.env
-    );
-  }
-
-  return c.json({
-    guesses_this_turn: session.guesses_this_turn,
-    limit: session.clue_number === 99 ? null : session.clue_number + 1,
-    violation: limitViolation,
-    tts_audio_base64: ttsBase64,
   });
 });
 
@@ -340,12 +372,24 @@ app.post("/api/session/:id/guess", async (c) => {
 
 app.post("/api/session/:id/turn/end", async (c) => {
   const session = await getSession(c.req.param("id"), c.env.BOARD_KV);
+
+  // Official rules: the team must make at least one guess per clue. The
+  // referee announces the violation but still passes the turn — humans rule.
+  let message: string | null = null;
+  if (session.clue_number !== null && (session.turn_reveals ?? []).length === 0) {
+    message = "Heads up — the rules require at least one guess per clue.";
+    if (session.game_id) {
+      await logIntervention(session.game_id, null, "nudge", "no_guess_made", message, 0.9, c.env);
+    }
+  }
+
   session.current_team = session.current_team === "red" ? "blue" : "red";
   session.guesses_this_turn = 0;
+  session.turn_reveals = [];
   session.clue_number = null;
   session.clue_word = null;
   await saveSession(session, c.env.BOARD_KV);
-  return c.json({ current_team: session.current_team });
+  return c.json({ current_team: session.current_team, message });
 });
 
 // ---------- Health ----------

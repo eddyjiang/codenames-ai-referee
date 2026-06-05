@@ -31,7 +31,13 @@ export interface CardState {
   corners?: CardCorners | null;
   // Per-cell median HSV + text contrast-depth ratio from the CV classifier (tuning aid).
   debug?: { h: number; s: number; v: number; dr?: number } | null;
+  // User-pinned team/revealed: when true, CV and LLM never change this cell.
+  manual?: boolean;
 }
+
+// A team edit from the card editor. "unrevealed" pins the cell as face-up;
+// "auto" releases the pin so CV/LLM resume control.
+export type TeamEdit = "red" | "blue" | "bystander" | "assassin" | "unrevealed" | "auto";
 
 export interface BoardState {
   board: CardState[];
@@ -65,6 +71,24 @@ export interface RulesResult {
   confidence: number;
 }
 
+// Board-driven guess tracking: the worker diffs reveals on every board
+// mutation and reports the turn's state back with the response.
+export interface GuessEvent {
+  position: number;
+  word: string | null;
+  team: CardTeam | null;
+  outcome: "correct" | "opponent" | "bystander" | "assassin";
+}
+
+export interface GameUpdate {
+  current_team: string;
+  guesses_this_turn: number;
+  limit: number | null;
+  events: GuessEvent[];
+  /** Referee announcement to speak via browser TTS, if any. */
+  message: string | null;
+}
+
 export interface SessionState {
   session_id: string;
   game_id: string | null;
@@ -72,6 +96,5 @@ export interface SessionState {
   guesses_this_turn: number;
   clue_number: number | null;
   clue_word: string | null;
-  clues_given: string[];
   board: BoardState | null;
 }

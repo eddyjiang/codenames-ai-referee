@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 import { BoardOverlay } from "./BoardOverlay";
+import { CardEditModal } from "./CardEditModal";
 import { captureVideoFrame } from "../lib/captureFrame";
 import { api } from "../lib/api";
-import type { BoardState } from "../types";
+import type { BoardState, CardTeam, TeamEdit } from "../types";
 
 type Engine = "auto" | "cv";
 type PlaybackMode = "realtime" | "frame";
@@ -160,6 +161,9 @@ export function VideoTestView({ sessionId }: Props) {
   const [duration, setDuration] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const [showHsv, setShowHsv] = useState(false);
+  const [editingCard, setEditingCard] = useState<
+    { position: number; word: string; team: CardTeam | null; manual: boolean } | null
+  >(null);
 
   // Mirror live-adjustable settings into refs so the async capture loop reads
   // current values rather than the values captured when the loop started.
@@ -335,6 +339,25 @@ export function VideoTestView({ sessionId }: Props) {
     setCurrentTime(t);
   }, []);
 
+  const onCardEdit = useCallback(
+    (position: number, word: string, team: CardTeam | null, manual: boolean) =>
+      setEditingCard({ position, word, team, manual }),
+    []
+  );
+  const onCardApply = useCallback(
+    async (word: string, team?: TeamEdit) => {
+      if (!editingCard) return;
+      try {
+        const { board: updated } = await api.updateCard(sessionId, editingCard.position, { word, team });
+        setBoard(updated);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+      setEditingCard(null);
+    },
+    [sessionId, editingCard]
+  );
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="px-5 pt-8 pb-4 flex items-center justify-between">
@@ -399,7 +422,15 @@ export function VideoTestView({ sessionId }: Props) {
               />
               <canvas ref={canvasRef} className="hidden" />
 
-              {videoUrl && <BoardOverlay board={board} lowConfidence={lowConfidence} overlay showDebug={showHsv} />}
+              {videoUrl && (
+                <BoardOverlay
+                  board={board}
+                  lowConfidence={lowConfidence}
+                  overlay
+                  showDebug={showHsv}
+                  onCardEdit={onCardEdit}
+                />
+              )}
 
               {busy && (
                 <div className="absolute top-3 right-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1">
@@ -588,6 +619,17 @@ export function VideoTestView({ sessionId }: Props) {
           e.target.value = "";
         }}
       />
+
+      {editingCard !== null && (
+        <CardEditModal
+          position={editingCard.position}
+          word={editingCard.word}
+          team={editingCard.team}
+          manual={editingCard.manual}
+          onApply={onCardApply}
+          onClose={() => setEditingCard(null)}
+        />
+      )}
     </div>
   );
 }

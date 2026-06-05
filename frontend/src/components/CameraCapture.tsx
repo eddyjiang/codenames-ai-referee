@@ -34,7 +34,7 @@ export function CameraCapture({ onBoardUpdate, onError, onFrameSend, autoStart }
     stopCamera,
     startScanning,
     stopScanning,
-  } = useCamera({ onFrame: handleFrame, intervalMs: 5000 });
+  } = useCamera({ onFrame: handleFrame, intervalMs: 3000 });
 
   const didAutoStart = useRef(false);
   useEffect(() => {

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * Unit tests for selectVisionPlan — the pure frame-routing decision, including
- * the periodic LLM reveal-read scheduling. No network, no Cloudflare.
+ * Unit tests for selectVisionPlan — the pure SYNCHRONOUS frame-routing decision.
+ * (The periodic LLM reveal read is scheduled in the background by the /frame
+ * handler, not chosen here.) No network, no Cloudflare.
  *   node scripts/test-vision-plan.mjs
  */
 import assert from "node:assert/strict";
-import { selectVisionPlan, LLM_REVEAL_INTERVAL_MS } from "../worker/src/vision-plan.ts";
+import { selectVisionPlan } from "../worker/src/vision-plan.ts";
 
 function board(words) {
   return {
@@ -20,8 +21,7 @@ const zeroWords = board(Array(25).fill(null));
 const locked = board(["AMAZON", ...Array(24).fill(null)]);
 const lockedList = ["AMAZON", ...Array(24).fill(null)];
 const BOTH = { cv: true, llm: true };
-const CV_ONLY = { cv: true, llm: false };
-const LLM_ONLY = { cv: false, llm: true };
+const NO_CV = { cv: false, llm: true };
 
 let passed = 0;
 function check(name, actual, expected) {
@@ -30,7 +30,7 @@ function check(name, actual, expected) {
   passed++;
 }
 
-// ── pure-cv engine ───────────────────────────────────────────────────────────
+// pure-cv engine
 check("cv + no board → CV full",
   selectVisionPlan("cv", noBoard, BOTH),
   { backend: "cv", mode: "full", knownWords: null, reason: "cv-full" });
@@ -38,32 +38,22 @@ check("cv + locked → CV track",
   selectVisionPlan("cv", locked, BOTH),
   { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
 
-// ── auto: first scan ─────────────────────────────────────────────────────────
+// auto: first scan
 check("auto + no board → LLM first-scan",
-  selectVisionPlan("auto", noBoard, BOTH, 0, 0),
+  selectVisionPlan("auto", noBoard, BOTH),
   { backend: "llm", mode: "full", knownWords: null, reason: "first-scan" });
 check("auto + 0 words → LLM first-scan",
-  selectVisionPlan("auto", zeroWords, BOTH, 0, 0),
+  selectVisionPlan("auto", zeroWords, BOTH),
   { backend: "llm", mode: "full", knownWords: null, reason: "first-scan" });
 
-// ── auto: locked, between LLM reads → fast CV track ──────────────────────────
-check("auto + locked + recent LLM → CV track",
-  selectVisionPlan("auto", locked, BOTH, 5_000, 0),  // 5s since last LLM < interval
+// auto: locked → fast CV track every frame (LLM reveal is backgrounded elsewhere)
+check("auto + locked + CV → CV track (sync; LLM reveal is background)",
+  selectVisionPlan("auto", locked, BOTH),
   { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
 
-// ── auto: locked, LLM read is due → LLM reveal ───────────────────────────────
-check("auto + locked + LLM due → LLM reveal",
-  selectVisionPlan("auto", locked, BOTH, LLM_REVEAL_INTERVAL_MS + 1, 0),
+// auto: locked, no CV service → blocking LLM per frame
+check("auto + locked + no CV → LLM reveal (blocking fallback)",
+  selectVisionPlan("auto", locked, NO_CV),
   { backend: "llm", mode: "full", knownWords: lockedList, reason: "llm-reveal" });
 
-// ── auto: locked, no CV service → LLM every frame ────────────────────────────
-check("auto + locked + no CV → LLM reveal",
-  selectVisionPlan("auto", locked, LLM_ONLY, 1_000, 0),
-  { backend: "llm", mode: "full", knownWords: lockedList, reason: "llm-reveal" });
-
-// ── auto: locked, due but no LLM configured → fall back to CV track ──────────
-check("auto + locked + due + no LLM → CV track",
-  selectVisionPlan("auto", locked, CV_ONLY, LLM_REVEAL_INTERVAL_MS + 1, 0),
-  { backend: "cv", mode: "track", knownWords: lockedList, reason: "cv-track" });
-
-console.log(`\n${passed}/8 passed`);
+console.log(`\n${passed}/6 passed`);

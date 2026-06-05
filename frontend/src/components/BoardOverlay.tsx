@@ -5,22 +5,22 @@ interface Props {
   lowConfidence: boolean;
   overlay?: boolean;
   onRescan?: () => void;
-  onCardEdit?: (position: number, word: string) => void;
+  onCardEdit?: (position: number, word: string, team: CardTeam | null, manual: boolean) => void;
   showDebug?: boolean; // overlay each card's measured H·S·V (CV tuning)
 }
 
 const TEAM_CLASS: Record<CardTeam, string> = {
-  red:       "cn-card cn-card-revealed-red",
-  blue:      "cn-card cn-card-revealed-blue",
+  red: "cn-card cn-card-revealed-red",
+  blue: "cn-card cn-card-revealed-blue",
   bystander: "cn-card cn-card-revealed-bystander",
-  assassin:  "cn-card cn-card-revealed-assassin",
+  assassin: "cn-card cn-card-revealed-assassin",
 };
 
 const TEAM_OVERLAY: Record<CardTeam, { fill: string; stroke: string; text: string }> = {
-  red:       { fill: "rgba(144,31,75,0.60)",   stroke: "#d85b3f", text: "#fff" },
-  blue:      { fill: "rgba(26,86,168,0.60)",   stroke: "#60a5fa", text: "#fff" },
+  red: { fill: "rgba(144,31,75,0.60)", stroke: "#d85b3f", text: "#fff" },
+  blue: { fill: "rgba(26,86,168,0.60)", stroke: "#60a5fa", text: "#fff" },
   bystander: { fill: "rgba(184,154,106,0.55)", stroke: "#b89a6a", text: "#fff" },
-  assassin:  { fill: "rgba(10,5,5,0.75)",      stroke: "#555",    text: "#aaa" },
+  assassin: { fill: "rgba(10,5,5,0.75)", stroke: "#555", text: "#aaa" },
 };
 const UNREVEALED_OVERLAY = { fill: "rgba(240,228,200,0.08)", stroke: "rgba(245,165,33,0.45)", text: "rgba(255,255,255,0.85)" };
 
@@ -32,10 +32,10 @@ function confColor(conf: number): string {
 
 function bboxToCorners(bbox: BBox): CardCorners {
   return {
-    tl: { x: bbox.x,          y: bbox.y          },
-    tr: { x: bbox.x + bbox.w, y: bbox.y          },
+    tl: { x: bbox.x, y: bbox.y },
+    tr: { x: bbox.x + bbox.w, y: bbox.y },
     br: { x: bbox.x + bbox.w, y: bbox.y + bbox.h },
-    bl: { x: bbox.x,          y: bbox.y + bbox.h },
+    bl: { x: bbox.x, y: bbox.y + bbox.h },
   };
 }
 
@@ -81,10 +81,10 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
   const color = confColor(conf);
   const confLabel = conf >= 0.85 ? "High" : conf >= 0.65 ? "Med" : "Low";
 
-  const red  = board.score.red_remaining;
+  const red = board.score.red_remaining;
   const blue = board.score.blue_remaining;
-  const revealed     = board.board.filter((c) => c.revealed);
-  const redRevealed  = revealed.filter((c) => c.team === "red").length;
+  const revealed = board.board.filter((c) => c.revealed);
+  const redRevealed = revealed.filter((c) => c.team === "red").length;
   const blueRevealed = revealed.filter((c) => c.team === "blue").length;
 
   if (overlay) {
@@ -94,7 +94,7 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
     if (!hasOverlay) {
       return (
         <div className="absolute inset-0 flex flex-col justify-between p-2 rounded-2xl overflow-hidden"
-             style={{ background: "rgba(17,7,9,0.60)" }}>
+          style={{ background: "rgba(17,7,9,0.60)" }}>
           <div className="flex items-center justify-between px-1">
             <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
               R {red !== null ? red : redRevealed}
@@ -164,7 +164,7 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
                 pointerEvents: onCardEdit ? "auto" : "none",
                 cursor: onCardEdit ? "pointer" : "default",
               }}
-              onClick={onCardEdit ? () => onCardEdit(card.position, card.word ?? "") : undefined}
+              onClick={onCardEdit ? () => onCardEdit(card.position, card.word ?? "", card.team, !!card.manual) : undefined}
             >
               {card.word ?? "?"}
               {onCardEdit && (
@@ -190,23 +190,20 @@ export function BoardOverlay({ board, lowConfidence, overlay, onRescan, onCardEd
           className="absolute bottom-2 inset-x-2 flex items-center justify-between px-2 py-1 rounded-lg"
           style={{ background: "rgba(17,7,9,0.65)", pointerEvents: "auto" }}
         >
-          <span className="font-heading text-[10px] font-bold tracking-widest" style={{ color: "#d85b3f" }}>
-            R {red !== null ? red : redRevealed}
-          </span>
-          <span className="font-heading text-[9px] tracking-widest" style={{ color }}>
-            {lowConfidence ? "Low" : confLabel} · {overlayCards.length}/25
+          <span className="font-heading text-base font-bold tracking-widest" style={{ color: "#d85b3f" }}>
+            RED: {red !== null ? red : redRevealed}
           </span>
           {onRescan && (
             <button
               onClick={onRescan}
-              className="font-heading text-[9px] tracking-widest uppercase px-2 py-0.5 rounded"
+              className="font-heading text-sm tracking-widest uppercase px-2 py-0.5 rounded"
               style={{ color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.15)" }}
             >
               Rescan
             </button>
           )}
-          <span className="font-heading text-[10px] font-bold tracking-widest text-blue-400">
-            B {blue !== null ? blue : blueRevealed}
+          <span className="font-heading text-base font-bold tracking-widest text-blue-400">
+            BLUE: {blue !== null ? blue : blueRevealed}
           </span>
         </div>
       </div>

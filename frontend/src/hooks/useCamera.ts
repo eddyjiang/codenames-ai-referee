@@ -24,6 +24,21 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
     return captureVideoFrame(video, canvas, { rotateForDevice: true });
   }, []);
 
+  // Tear down when the stream dies externally (permission revoked, device
+  // disconnected). Without this the scan interval keeps sending the frozen
+  // last frame to the vision API forever.
+  const handleStreamEnded = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setActive(false);
+    setScanning(false);
+    setError("Camera stopped — permission revoked or device disconnected");
+  }, []);
+
   const startCamera = useCallback(async () => {
     setError(null);
     try {
@@ -36,6 +51,9 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
         audio: false,
       });
 
+      // `ended` fires on external causes only (not our own track.stop()).
+      stream.getTracks().forEach((t) => { t.onended = handleStreamEnded; });
+
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -45,7 +63,7 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Camera access denied");
     }
-  }, []);
+  }, [handleStreamEnded]);
 
   const stopCamera = useCallback(() => {
     if (intervalRef.current) {
@@ -68,6 +86,13 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
     setScanning(true);
 
     const tick = async () => {
+      // Guard for browsers where `ended` doesn't fire: a non-live track means
+      // the frame would be a frozen snapshot — stop instead of burning API calls.
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (!track || track.readyState !== "live") {
+        handleStreamEnded();
+        return;
+      }
       const frame = captureFrame();
       if (frame) {
         await onFrame(frame);
@@ -77,7 +102,7 @@ export function useCamera({ onFrame, intervalMs = 5000 }: UseCameraOptions) {
     // Immediate first capture
     tick();
     intervalRef.current = setInterval(tick, intervalMs);
-  }, [active, captureFrame, onFrame, intervalMs]);
+  }, [active, captureFrame, onFrame, intervalMs, handleStreamEnded]);
 
   const stopScanning = useCallback(() => {
     if (intervalRef.current) {

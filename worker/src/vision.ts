@@ -3,7 +3,9 @@ import type { BoardState, Env } from "./types";
 import { VISION_PROMPT } from "./prompts";
 import { selectVisionPlan } from "./vision-plan";
 import type { VisionEngine } from "./vision-plan";
-import { mergeCvTrack, mergeLlmReveal } from "./vision-merge";
+import { mergeCvTrack, mergeLlmReveal, applyRevealRead } from "./vision-merge";
+import { trackReveals } from "./guess-tracking";
+import { getSession, saveSession } from "./session";
 
 const OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
@@ -138,15 +140,13 @@ async function llmVisionRaw(
 }
 
 // ---------------------------------------------------------------------------
-// Public entry point
-//
-// engine "auto" (production): LLM reads words on the first scan; the CV service
-//   then tracks colour/perspective fast on most frames, while every
-//   LLM_REVEAL_INTERVAL_MS the LLM does an authoritative reveal/team read
-//   (CV alone can't tell a bystander tile from an unrevealed word card). CV
-//   frames carry the LLM's last verdict forward (mergeCvTrack).
-// engine "cv" (pure-CV test): every frame → CV service. No LLM, so bystanders
-//   are not detected (parked as unrevealed) — that's the limitation we proved.
+// Public entry point — the SYNCHRONOUS result (always fast in "auto"):
+//   "auto": LLM reads words on the first scan, then CV track every locked frame
+//     (perspective + red/blue/assassin). The authoritative LLM reveal read that
+//     catches bystanders runs in the BACKGROUND (runBackgroundReveal, scheduled
+//     from the /frame handler) so this path never blocks on the LLM.
+//   "cv": every frame → CV service. No LLM, so bystanders are parked as
+//     unrevealed — the limitation we proved.
 // ---------------------------------------------------------------------------
 
 export async function analyzeFrame(
@@ -162,7 +162,7 @@ export async function analyzeFrame(
     llm: !!(env.OPENROUTER_API_KEY || env.ANTHROPIC_API_KEY),
   };
   const lastLlmAt = existingBoard?.llm_at ?? 0;
-  const plan = selectVisionPlan(engine, existingBoard, caps, now, lastLlmAt);
+  const plan = selectVisionPlan(engine, existingBoard, caps);
   const lockedWords = plan.knownWords;
 
   // ── CV service backend (track for auto; full + track for pure-cv) ──
@@ -235,4 +235,45 @@ export async function getBoardState(
 
 export async function clearBoardState(sessionId: string, kv: KVNamespace): Promise<void> {
   await kv.delete(`board:${sessionId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Background LLM reveal read ("auto" mode)
+//
+// Scheduled from the /frame handler via ctx.waitUntil so the frame response is
+// never blocked by the ~2–4s LLM call. It reads the frame's image, then merges
+// the LLM's reveal/team verdict (the value-add being bystanders) ONTO the latest
+// live board in KV — so the next CV frame picks it up. Never un-reveals a card,
+// so a fresh CV red/blue isn't reverted by a slightly-older LLM frame.
+// ---------------------------------------------------------------------------
+
+export async function runBackgroundReveal(
+  imageBase64: string,
+  mediaType: "image/jpeg" | "image/png" | "image/webp",
+  env: Env,
+  sessionId: string,
+  lockedWords: (string | null)[]
+): Promise<void> {
+  try {
+    const raw = await llmVisionRaw(imageBase64, mediaType, env);
+    const llmBoard = parseVisionResponse(raw);
+    const latest = await getBoardState(sessionId, env.BOARD_KV);
+    if (!latest) return; // board was reset while we were reading; drop this result
+    const prev = structuredClone(latest); // applyRevealRead mutates in place
+    applyRevealRead(latest, llmBoard, lockedWords);
+    latest.llm_at = Date.now();
+    if (latest.metadata) latest.metadata.notes = "llm:reveal(bg)";
+    await storeBoardState(sessionId, latest, env.BOARD_KV);
+
+    // Reveals landing here (bystanders especially) are guesses too. There's no
+    // response to attach the announcement to, so park it on the session — the
+    // next /frame response picks it up and the client speaks it.
+    const session = await getSession(sessionId, env.BOARD_KV);
+    const game = trackReveals(session, prev, latest);
+    if (game?.message) session.pending_message = game.message;
+    session.board = latest;
+    await saveSession(session, env.BOARD_KV);
+  } catch (e) {
+    console.error("background reveal failed:", (e as Error).message);
+  }
 }

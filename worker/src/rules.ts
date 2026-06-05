@@ -166,21 +166,6 @@ function checkZeroClue(
   return null;
 }
 
-function checkRepeatClue(
-  clue: string,
-  cluesGiven: string[]
-): RuleViolation | null {
-  const norm = normalize(clue);
-  if (cluesGiven.map(normalize).includes(norm)) {
-    return {
-      rule: "repeat_clue",
-      description: `"${clue}" was already used as a clue this game.`,
-      confidence: 1.0,
-    };
-  }
-  return null;
-}
-
 export function checkGuessLimit(
   guessesThisTurn: number,
   clueNumber: number
@@ -196,17 +181,27 @@ export function checkGuessLimit(
   return null;
 }
 
+function checkExtraCommunication(extra: string | null | undefined): RuleViolation | null {
+  if (!extra) return null;
+  return {
+    rule: "extra_communication",
+    description: `The spymaster said more than the clue and number: "${extra}". Spymasters may only say a one-word clue and a number.`,
+    confidence: 0.95,
+  };
+}
+
 // ---------- main validation entry point ----------
 
 export function validateClue(
   clue: string,
   number: number,
   board: BoardState,
-  cluesGiven: string[],
-  houseRules: HouseRules
+  houseRules: HouseRules,
+  extraSpeech?: string | null
 ): RulesResult {
   const violations: RuleViolation[] = [];
 
+  // Note: no repeat-clue check — the official rules don't forbid reusing a clue.
   const checks = [
     checkMultipleWords(clue),
     checkWordOnBoard(clue, board),
@@ -214,7 +209,7 @@ export function validateClue(
     checkRootMatch(clue, board),
     checkCompoundPart(clue, board, houseRules),
     checkZeroClue(number, houseRules),
-    checkRepeatClue(clue, cluesGiven),
+    checkExtraCommunication(extraSpeech),
   ];
 
   for (const v of checks) {
@@ -259,9 +254,12 @@ function buildMessage(level: InterventionLevel, v: RuleViolation): string {
   if (level === "log") return "";
 
   if (level === "nudge") {
-    return `Just checking — ${v.description.charAt(0).toLowerCase() + v.description.slice(1)} Want to give a different clue?`;
+    // The guessers already heard the clue — offering a do-over would be unfair.
+    // The clue stands; the referee advises the rule and play continues.
+    return `Heads up — ${v.description.charAt(0).toLowerCase() + v.description.slice(1)} The clue stands, but please avoid clues like that going forward.`;
   }
 
-  // stop
-  return `That clue isn't legal. ${v.description} Please give a new clue.`;
+  // stop — an illegal clue forfeits the turn (no guesses); the referee
+  // announces it but humans end the turn themselves.
+  return `That clue isn't legal. ${v.description} No guesses may be made — the turn should pass to the other team.`;
 }

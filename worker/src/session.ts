@@ -13,9 +13,9 @@ export function defaultSession(sessionId: string): SessionState {
     game_id: null,
     current_team: "red",
     guesses_this_turn: 0,
+    turn_reveals: [],
     clue_number: null,
     clue_word: null,
-    clues_given: [],
     board: null,
     house_rules: { ...DEFAULT_HOUSE_RULES },
   };

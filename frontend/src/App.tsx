@@ -1,15 +1,21 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { CameraCapture } from "./components/CameraCapture";
 import { BoardOverlay } from "./components/BoardOverlay";
 import { VoiceControls } from "./components/VoiceControls";
 import { GameSetup } from "./components/GameSetup";
 import { VideoTestView } from "./components/VideoTestView";
+import { CardEditModal } from "./components/CardEditModal";
 import { api } from "./lib/api";
-import type { BoardState, Team, RulesResult } from "./types";
+import { speakText } from "./hooks/useVoice";
+import type { BoardState, GameUpdate, Team, CardTeam, TeamEdit } from "./types";
 
-const isVideoTest =
-  typeof window !== "undefined" &&
-  new URLSearchParams(window.location.search).get("test") === "video";
+const testMode =
+  typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("test")
+    : null;
+const isVideoTest = testMode === "video";
+// Demo mode: static board seeded server-side — no camera, no vision-API credits.
+const isBoardDemo = testMode === "board";
 
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -21,9 +27,9 @@ export default function App() {
   const [guessesThisTurn, setGuessesThisTurn] = useState(0);
   const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
-  const [editingCard, setEditingCard] = useState<{ position: number; word: string } | null>(null);
-  const [editWord, setEditWord] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
+  const [editingCard, setEditingCard] = useState<
+    { position: number; word: string; team: CardTeam | null; manual: boolean } | null
+  >(null);
 
   useEffect(() => {
     let ignore = false;
@@ -33,17 +39,37 @@ export default function App() {
     return () => { ignore = true; };
   }, []);
 
+  // Demo mode: seed the static board as soon as the session exists.
+  useEffect(() => {
+    if (!isBoardDemo || !sessionId) return;
+    let ignore = false;
+    api.seedDemoBoard(sessionId)
+      .then(({ board: b }) => { if (!ignore) setBoard(b); })
+      .catch((e: Error) => { if (!ignore) setInitError(e.message); });
+    return () => { ignore = true; };
+  }, [sessionId]);
+
   const handleBoardUpdate = useCallback((b: BoardState, low: boolean) => {
     setBoard(b);
     setLowConfidence(low);
   }, []);
 
+  // Board-driven guess tracking: every board mutation (frame or card edit)
+  // returns the turn's guess state; the referee speaks any announcement.
+  const applyGameUpdate = useCallback((game: GameUpdate | null) => {
+    if (!game) return;
+    setGuessesThisTurn(game.guesses_this_turn);
+    if (game.message) speakText(game.message);
+  }, []);
+
   const handleFrameSend = useCallback(
     async (base64: string) => {
       if (!sessionId) throw new Error("No session");
-      return api.sendFrame(sessionId, base64);
+      const res = await api.sendFrame(sessionId, base64);
+      applyGameUpdate(res.game);
+      return res;
     },
-    [sessionId]
+    [sessionId, applyGameUpdate]
   );
 
   const handleStartGame = useCallback(async (firstTeam: Team, timer: number | null) => {
@@ -60,12 +86,13 @@ export default function App() {
     }
   }, [sessionId]);
 
-  const handleAudioClue = useCallback(
-    async (blob: Blob) => {
+  const handleTranscriptClue = useCallback(
+    async (transcript: string) => {
       if (!sessionId) throw new Error("No session");
-      const res = await api.sendAudioClue(sessionId, blob);
-      if (res.rules.valid && res.clue) {
-        setCurrentClue(res.clue);
+      const res = await api.validateClueTranscript(sessionId, transcript);
+      // The clue stands unless confidently illegal — matches the worker.
+      if (res.clue && res.clue.number !== null && res.rules && res.rules.intervention_level !== "stop") {
+        setCurrentClue({ word: res.clue.word, number: res.clue.number });
         setGuessesThisTurn(0);
       }
       return res;
@@ -73,48 +100,41 @@ export default function App() {
     [sessionId]
   );
 
-  const handleTextClue = useCallback(
-    async (word: string, number: number): Promise<RulesResult> => {
-      if (!sessionId) throw new Error("No session");
-      const result = await api.validateClue(sessionId, word, number);
-      if (result.valid) {
-        setCurrentClue({ word, number });
-        setGuessesThisTurn(0);
-      }
-      return result;
-    },
-    [sessionId]
-  );
-
-  const handleGuess = useCallback(async () => {
-    if (!sessionId) throw new Error("No session");
-    const res = await api.recordGuess(sessionId);
-    setGuessesThisTurn(res.guesses_this_turn);
-    return res;
-  }, [sessionId]);
-
   const handleRescan = useCallback(async () => {
     if (!sessionId) return;
+    // Demo mode: re-seed a fresh board (clears simulated reveals) — there's no
+    // camera to rescan from.
+    if (isBoardDemo) {
+      const { board: b } = await api.seedDemoBoard(sessionId);
+      setBoard(b);
+      return;
+    }
     await api.resetBoard(sessionId);
     setBoard(null);
   }, [sessionId]);
 
-  const handleCardEdit = useCallback((position: number, word: string) => {
-    setEditingCard({ position, word });
-    setEditWord(word);
-    setTimeout(() => editInputRef.current?.select(), 50);
-  }, []);
+  const handleCardEdit = useCallback(
+    (position: number, word: string, team: CardTeam | null, manual: boolean) => {
+      setEditingCard({ position, word, team, manual });
+    },
+    []
+  );
 
-  const handleCardSave = useCallback(async () => {
-    if (!sessionId || !editingCard) return;
-    const updated = await api.updateCard(sessionId, editingCard.position, editWord);
-    setBoard(updated);
-    setEditingCard(null);
-  }, [sessionId, editingCard, editWord]);
+  const handleCardApply = useCallback(
+    async (word: string, team?: TeamEdit) => {
+      if (!sessionId || !editingCard) return;
+      const { board: updated, game } = await api.updateCard(sessionId, editingCard.position, { word, team });
+      setBoard(updated);
+      applyGameUpdate(game);
+      setEditingCard(null);
+    },
+    [sessionId, editingCard, applyGameUpdate]
+  );
 
   const handleTurnEnd = useCallback(async () => {
     if (!sessionId) return;
     const res = await api.endTurn(sessionId);
+    if (res.message) speakText(res.message); // e.g. ended with zero guesses
     setCurrentTeam(res.current_team as Team);
     setCurrentClue(null);
     setGuessesThisTurn(0);
@@ -167,6 +187,12 @@ export default function App() {
           >
             🎬 Video test
           </a>
+          <a
+            href="?test=board"
+            className="font-heading text-[10px] tracking-widest uppercase text-white/40 hover:text-brand-gold transition-colors"
+          >
+            🎲 Demo board
+          </a>
           {gameId && (
             <div
               className="flex items-center gap-1.5 rounded-full px-3 py-1"
@@ -183,16 +209,21 @@ export default function App() {
       <main className="flex-1 px-5 pb-6">
         <div className="flex flex-col md:flex-row md:items-start gap-4">
 
-          {/* Camera + board overlay — full width on mobile, 75% on desktop */}
+          {/* Camera + board overlay — full width on mobile, 75% on desktop.
+              Demo mode swaps the camera for a static surface (zero credits). */}
           <div className="md:flex-[3]">
             <div className="relative">
-              <CameraCapture
-                sessionId={sessionId}
-                onBoardUpdate={handleBoardUpdate}
-                onError={console.error}
-                onFrameSend={handleFrameSend}
-                autoStart
-              />
+              {isBoardDemo ? (
+                <div className="w-full rounded-2xl bg-surface-800" style={{ aspectRatio: "4/3" }} />
+              ) : (
+                <CameraCapture
+                  sessionId={sessionId}
+                  onBoardUpdate={handleBoardUpdate}
+                  onError={console.error}
+                  onFrameSend={handleFrameSend}
+                  autoStart
+                />
+              )}
               {board && (
                 <BoardOverlay
                   board={board}
@@ -203,6 +234,11 @@ export default function App() {
                 />
               )}
             </div>
+            {isBoardDemo && (
+              <p className="mt-2 text-center font-heading text-[10px] tracking-[0.25em] uppercase text-white/40">
+                🎲 Demo board — camera off, no API credits. Tap a card to simulate a reveal.
+              </p>
+            )}
           </div>
 
           {/* Game panel — full width on mobile (scrolls below), 25% sidebar on desktop */}
@@ -219,9 +255,7 @@ export default function App() {
               <VoiceControls
                 sessionId={sessionId}
                 hasBoard={!!board}
-                onClueAudio={handleAudioClue}
-                onClueText={handleTextClue}
-                onGuess={handleGuess}
+                onClueTranscript={handleTranscriptClue}
                 onTurnEnd={handleTurnEnd}
                 currentTeam={currentTeam}
                 currentClue={currentClue}
@@ -233,29 +267,16 @@ export default function App() {
 
         </div>
       </main>
-      {/* Card edit modal */}
+      {/* Card edit modal — word + team (team override pins against CV/LLM) */}
       {editingCard !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setEditingCard(null)}>
-          <div className="surface rounded-2xl p-5 space-y-4 w-72 mx-4" onClick={(e) => e.stopPropagation()}>
-            <p className="font-heading text-[10px] tracking-[0.25em] uppercase text-white/50">
-              Edit card {editingCard.position + 1}
-            </p>
-            <input
-              ref={editInputRef}
-              type="text"
-              value={editWord}
-              onChange={(e) => setEditWord(e.target.value.toUpperCase())}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCardSave(); if (e.key === "Escape") setEditingCard(null); }}
-              autoFocus
-              className="w-full px-3 py-2 rounded-lg bg-transparent border border-white/20 focus:border-brand-gold outline-none font-heading text-lg text-white tracking-widest uppercase"
-              placeholder="WORD"
-            />
-            <div className="flex gap-2">
-              <button onClick={() => setEditingCard(null)} className="flex-1 btn-ghost text-sm">Cancel</button>
-              <button onClick={handleCardSave} className="flex-1 btn-primary text-sm">Save</button>
-            </div>
-          </div>
-        </div>
+        <CardEditModal
+          position={editingCard.position}
+          word={editingCard.word}
+          team={editingCard.team}
+          manual={editingCard.manual}
+          onApply={handleCardApply}
+          onClose={() => setEditingCard(null)}
+        />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import type { BoardState, RulesResult, SessionState } from "../types";
+import type { BoardState, GameUpdate, RulesResult, SessionState, TeamEdit } from "../types";
 
 const BASE = "/api";
 
@@ -35,7 +35,7 @@ export const api = {
     imageBase64: string,
     mediaType = "image/jpeg",
     engine: "auto" | "cv" = "auto"
-  ): Promise<{ board: BoardState; low_confidence: boolean }> {
+  ): Promise<{ board: BoardState; low_confidence: boolean; game: GameUpdate | null }> {
     return post(`/session/${sessionId}/frame`, {
       image: imageBase64,
       media_type: mediaType,
@@ -55,38 +55,20 @@ export const api = {
     return post(`/session/${sessionId}/clue`, { word, number });
   },
 
-  async sendAudioClue(
+  /** Live-browser path: raw transcript → server-side LLM parse + validation.
+      number is null when the spymaster never said one (never fabricated). */
+  validateClueTranscript(
     sessionId: string,
-    audioBlob: Blob
+    transcript: string
   ): Promise<{
     transcript: string;
-    clue: { word: string; number: number } | null;
-    rules: RulesResult;
-    tts_audio_base64: string | null;
+    clue: { word: string; number: number | null } | null;
+    rules: RulesResult | null;
   }> {
-    const form = new FormData();
-    form.append("audio", audioBlob, "clue.webm");
-    const res = await fetch(`${BASE}/session/${sessionId}/clue/audio`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error((err as { error: string }).error ?? res.statusText);
-    }
-    return res.json();
+    return post(`/session/${sessionId}/clue/transcript`, { transcript });
   },
 
-  recordGuess(sessionId: string): Promise<{
-    guesses_this_turn: number;
-    limit: number | null;
-    violation: unknown;
-    tts_audio_base64: string | null;
-  }> {
-    return post(`/session/${sessionId}/guess`, {});
-  },
-
-  endTurn(sessionId: string): Promise<{ current_team: string }> {
+  endTurn(sessionId: string): Promise<{ current_team: string; message: string | null }> {
     return post(`/session/${sessionId}/turn/end`, {});
   },
 
@@ -97,18 +79,27 @@ export const api = {
     return post(`/session/${sessionId}/house-rules`, rules);
   },
 
+  /** Seed a static demo board — exercises the game UI with no camera / vision credits. */
+  seedDemoBoard(sessionId: string): Promise<{ board: BoardState; low_confidence: boolean }> {
+    return post(`/session/${sessionId}/board/demo`, {});
+  },
+
   async resetBoard(sessionId: string): Promise<void> {
     const res = await fetch(`${BASE}/session/${sessionId}/board`, { method: "DELETE" });
     if (!res.ok) throw new Error(res.statusText);
   },
 
-  async updateCard(sessionId: string, position: number, word: string): Promise<BoardState> {
+  async updateCard(
+    sessionId: string,
+    position: number,
+    edit: { word?: string; team?: TeamEdit }
+  ): Promise<{ board: BoardState; game: GameUpdate | null }> {
     const res = await fetch(`${BASE}/session/${sessionId}/board/card`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ position, word }),
+      body: JSON.stringify({ position, ...edit }),
     });
     if (!res.ok) throw new Error(res.statusText);
-    return ((await res.json()) as { board: BoardState }).board;
+    return (await res.json()) as { board: BoardState; game: GameUpdate | null };
   },
 };
