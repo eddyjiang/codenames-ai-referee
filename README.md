@@ -1,18 +1,18 @@
-# Codenames AI Referee — *The Living Rulebook*
+# Codenames AI Referee
 
-An AI-powered board game referee for Codenames. A phone camera watches the physical board; Claude reconstructs board state from frames; a deterministic rules engine validates every clue; the referee speaks up only when needed.
+An AI-powered board game referee for Codenames. A camera watches the physical board; Claude reconstructs board state from frames; a deterministic rules engine validates every clue; the referee speaks up only when needed.
 
-**Runs entirely in a mobile browser — no app store required.**
+**Runs entirely in browser — no app required.**
 
 ---
 
-## 🎯 The Problem
+## The Problem
 
 Codenames is one of the most popular party games in the world, and it has famously ambiguous clue rules. The spymaster's one-word clue must not be a word on the board, a homophone of one, share a root with one, or be part of a compound board word — and casual players almost never know these rules, let alone enforce them. The result is familiar to anyone who's played: mid-game arguments ("is *waterfall* legal if WATER is on the board?"), games that stall while someone reads the rulebook, and one player stuck in the unfun role of rules lawyer.
 
 Existing digital adaptations solve this by replacing the physical game entirely — you play on a screen. That throws away the thing people actually like: cards on a table, friends around it.
 
-**The insight:** the referee should be *ambient*. Keep the physical game exactly as it is; prop a phone against a water glass; let an AI watch the board and surface the rules only when they're relevant. Three ideas make the approach original:
+**The insight:** the referee should be *ambient*. Keep the physical game exactly as it is; prop up a device with a camera; let an AI watch the board and surface the rules only when they're relevant. Three ideas make the approach original:
 
 1. **The board is never entered by hand.** Vision reconstructs all 25 cards, their teams, and what's been revealed — setup is "point the camera at the table."
 2. **AI perceives, code judges.** The LLM only reads the world; every rules decision is made by deterministic, testable functions. No hallucinated rulings.
@@ -20,21 +20,21 @@ Existing digital adaptations solve this by replacing the physical game entirely 
 
 ---
 
-## 🛠 What I Built
+## What I Built
 
-A full-stack, deployed system: a mobile-first React app, a Cloudflare Worker API at the edge, KV/D1 storage, and a Python computer-vision microservice.
+A full-stack, deployed system: a React web app, a Cloudflare Worker API at the edge, KV/D1 storage, and a Python computer-vision microservice.
 
 ```
-Phone browser
+Web browser
   ├── CameraCapture   → captures frames every 5s via getUserMedia()
   ├── BoardOverlay    → renders detected board state (perspective-correct quads)
-  └── VoiceControls   → mic (Whisper) + speaker (TTS)
+  └── VoiceControls   → mic (browser STT)
         ↕ JSON over HTTP
 Cloudflare Worker (edge)
-  ├── Vision pipeline  → Claude Sonnet vision (via OpenRouter, Anthropic API fallback)
+  ├── Vision pipeline  → Claude Sonnet vision (via OpenRouter)
   ├── Rules engine     → pure TypeScript functions, no AI
   ├── Intervention     → silent log / nudge / hard-stop by confidence
-  └── Voice I/O        → Whisper STT + OpenAI TTS
+  └── Voice            → browser STT
         ↕                              ↕
 Cloudflare KV + D1              CV service (FastAPI + OpenCV +
 live board state; sessions,     pytesseract, on DigitalOcean) —
@@ -60,7 +60,7 @@ The commit history records the real arc, including two measurement-driven pivots
 
 ---
 
-## 📊 Evaluation & Evidence
+## Evaluation & Evidence
 
 ### Measured: vision pipeline accuracy
 
@@ -81,18 +81,18 @@ I playtested over **3 rounds of real Codenames with friends**. The referee caugh
 ### Known limitations
 
 - **CV color classification misfires on cream card faces** — the source of the 19/25 false-reveal measurement. Mitigated by the LLM reveal check, but `cv-service/pipeline.py` thresholds remain imperfect.
-- **Camera dependence** — the phone must be propped with the full board in view; poor lighting or steep angles degrade confidence (the UI surfaces this as a low-confidence warning rather than failing silently).
+- **Camera dependence** — the camera must be propped with the full board in view; poor lighting or steep angles degrade confidence (the UI surfaces this as a low-confidence warning rather than failing silently).
 - **Latency** — frames are captured every 5 s and the authoritative reveal check runs in the background, so board updates can lag a few seconds behind the table.
 - **Heuristic rules are probabilistic** — homophone and shared-root detection carry < 1.0 confidence by design; the tiered-intervention system exists precisely because these can be wrong.
 - **Scale untested** — built and tested for one table/session at a time.
 
 ---
 
-## 🤖 AI Usage Disclosure & Credits
+## AI Usage Disclosure & Credits
 
 **How this was built:** The code in this repository was written with **Claude Code** (Anthropic's CLI coding agent) under my direction. I chose the architecture, made the design decisions described above, reviewed the changes, ran the deployments, and did all real-world validation — board photos, recorded-game harness runs, and live playtests. The commit history reflects that iterative process, including the dead ends (EasyOCR, pure-CV reveals).
 
-**AI at runtime:** Claude Sonnet (board vision, via OpenRouter with Anthropic API fallback), OpenAI Whisper (speech-to-text), OpenAI TTS (the referee's voice). The canonical, annotated prompts are in [`prompts/`](prompts/).
+**AI at runtime:** Claude Sonnet (board vision, via OpenRouter). The canonical, annotated prompts are in [`prompts/`](prompts/).
 
 **Sources & credits:** No code was forked or borrowed from existing repositories — the project was built from scratch on standard open-source dependencies: React, Vite, Tailwind, Hono, Cloudflare Workers/KV/D1, FastAPI, OpenCV, pytesseract, NumPy. *Codenames* is © Vlaada Chvátil / Czech Games Edition; this is an unaffiliated fan-made referee for the physical game.
 
@@ -111,8 +111,7 @@ Everything below is what you need to run, test, and deploy the project yourself.
 - Node.js 20+
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm i -g wrangler`)
 - A Cloudflare account (free tier works)
-- Anthropic API key
-- OpenAI API key
+- OpenRouter API key
 
 ---
 
@@ -158,8 +157,7 @@ npm run db:migrate:remote
 ### 4. Set Worker secrets
 
 ```bash
-wrangler secret put ANTHROPIC_API_KEY
-wrangler secret put OPENAI_API_KEY
+wrangler secret put OPENROUTER_API_KEY
 ```
 
 ### 5. Local development
@@ -186,7 +184,7 @@ curl http://localhost:8787/health
 
 ### Component 1: Camera Capture
 
-1. Open `http://localhost:5173` on your phone (or laptop with webcam).
+1. Open `http://localhost:5173` on your device.
 2. Tap **Start Camera** → grant permission.
 3. You should see the live viewfinder with a 5×5 grid guide overlay.
 4. Tap **Start Scanning** → the green "SCANNING" pulse appears.
@@ -285,8 +283,7 @@ For the frontend, deploy `/frontend/dist` to Cloudflare Pages and set the `API_B
 
 | Variable | Where set | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `wrangler secret put` | Claude vision API |
-| `OPENAI_API_KEY` | `wrangler secret put` | Whisper + TTS |
+| `OPENROUTER_API_KEY` | `wrangler secret put` | Claude vision |
 | `CLOUDFLARE_ACCOUNT_ID` | `.env` (local CLI only) | Wrangler auth |
 | `CLOUDFLARE_API_TOKEN` | `.env` (local CLI only) | Wrangler auth |
 
@@ -304,7 +301,7 @@ KV and D1 bindings are configured in `worker/wrangler.toml` — not env vars at 
 │       │   ├── CameraCapture.tsx   getUserMedia + frame capture
 │       │   ├── BoardOverlay.tsx    5×5 board state display
 │       │   ├── VideoTestView.tsx   video-fed CV test harness (?test=video)
-│       │   └── VoiceControls.tsx   mic + TTS playback
+│       │   └── VoiceControls.tsx   mic + STT
 │       ├── hooks/
 │       │   ├── useCamera.ts        camera lifecycle + interval
 │       │   └── useVoice.ts         MediaRecorder + audio playback
@@ -318,7 +315,7 @@ KV and D1 bindings are configured in `worker/wrangler.toml` — not env vars at 
 │       ├── vision-plan.ts          pure frame-routing decision (auto/cv)
 │       ├── rules.ts                Codenames rules engine (pure functions)
 │       ├── session.ts              KV session state + D1 persistence
-│       ├── voice.ts                Whisper STT + OpenAI TTS
+│       ├── voice.ts                STT
 │       └── prompts.ts              Inlined system prompts
 ├── db/
 │   ├── schema.sql                  Full schema reference
